@@ -53,6 +53,28 @@ class EventBuffer:
             if skipped:
                 self._backlog.extendleft(reversed(skipped))
 
+    async def recv_event(
+        self,
+        queue: asyncio.Queue[Event],
+        *,
+        timeout: float | None = None,
+        predicate: Callable[[Event], bool],
+    ) -> Event:
+        loop = asyncio.get_running_loop()
+        deadline = None if timeout is None else loop.time() + timeout
+        skipped: list[Event] = []
+
+        try:
+            while True:
+                remaining = None if deadline is None else max(0.0, deadline - loop.time())
+                event = await self.next_event(queue, timeout=remaining)
+                if predicate(event):
+                    return event
+                skipped.append(event)
+        finally:
+            if skipped:
+                self._backlog.extendleft(reversed(skipped))
+
     def has_pending(self) -> bool:
         return bool(self._backlog)
 

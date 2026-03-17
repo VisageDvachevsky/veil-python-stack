@@ -2,8 +2,11 @@
 smoke_roundtrip.py — one-process end-to-end smoke check for the Python bindings.
 
 Starts a real Veil server and client, performs handshake, sends one payload,
-waits for one reply, and exits. This is useful when validating that the Python
-wrappers and compiled extension still work together after transport changes.
+waits for one reply, and exits.
+
+Unlike the lower-level examples, this smoke test uses the session-oriented API
+(`server.accept()` / `client.connect_session()`), which is the intended
+starting point for real protocol usage.
 """
 
 from __future__ import annotations
@@ -11,7 +14,7 @@ from __future__ import annotations
 import asyncio
 import socket
 
-from veil_core import Client, DataEvent, NewConnectionEvent, Server
+from veil_core import Client, Server
 
 
 PSK = bytes.fromhex("ab" * 32)
@@ -32,30 +35,27 @@ async def main() -> None:
     client = Client(host="127.0.0.1", port=port, psk=PSK)
 
     async with server, client:
-        connect_task = asyncio.create_task(client.connect())
+        connect_task = asyncio.create_task(client.connect_session())
 
         async def server_loop() -> None:
-            async for event in server.events():
-                if isinstance(event, NewConnectionEvent):
-                    print(f"[smoke] server accepted session {event.session_id:#x}")
-                elif isinstance(event, DataEvent):
-                    print(f"[smoke] server received {event.data!r}")
-                    server.send(event.session_id, reply, stream_id=event.stream_id)
-                    break
+            session = await server.accept(timeout=5.0)
+            print(f"[smoke] server accepted session {session.session_id:#x}")
+            event = await session.recv(timeout=5.0, stream_id=42)
+            print(f"[smoke] server received {event.data!r}")
+            if not session.send(reply, stream_id=event.stream_id):
+                raise RuntimeError("server send queue rejected smoke reply")
 
         server_task = asyncio.create_task(server_loop())
-        connection = await asyncio.wait_for(connect_task, timeout=5)
-        print(f"[smoke] client connected as {connection.session_id:#x}")
+        session = await asyncio.wait_for(connect_task, timeout=5)
+        print(f"[smoke] client connected as {session.session_id:#x}")
 
-        if not client.send(payload, stream_id=42):
+        if not session.send(payload, stream_id=42):
             raise RuntimeError("client send queue rejected smoke payload")
 
-        async for event in client.events():
-            if isinstance(event, DataEvent):
-                print(f"[smoke] client received {event.data!r} on stream {event.stream_id}")
-                if event.data != reply or event.stream_id != 42:
-                    raise RuntimeError("unexpected smoke reply payload")
-                break
+        event = await session.recv(timeout=5.0, stream_id=42)
+        print(f"[smoke] client received {event.data!r} on stream {event.stream_id}")
+        if event.data != reply or event.stream_id != 42:
+            raise RuntimeError("unexpected smoke reply payload")
 
         await asyncio.wait_for(server_task, timeout=5)
         print("[smoke] roundtrip OK")

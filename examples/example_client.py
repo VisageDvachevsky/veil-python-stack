@@ -24,16 +24,17 @@ async def main(host: str, port: int) -> None:
     async with client:
         print(f"[client] Connecting to {host}:{port} …")
 
-        # Wait for the session to come up (crypto handshake)
-        conn = await client.connect()
-        print(f"[client] Connected! session_id={conn.session_id:#x}")
+        session = await client.connect_session()
+        print(f"[client] Connected! session_id={session.session_id:#x}")
 
-        # Send a test message
-        client.send(b"Hello from Python!", stream_id=1)
+        payload = {
+            "type": "hello",
+            "message": "Hello from Python!",
+        }
+        session.send_json(payload, stream_id=1)
 
-        # Read exactly one response and exit.
-        reply = await client.recv(timeout=5.0, stream_id=1)
-        print(f"[client] Server replied: {reply.data!r}")
+        reply = await session.recv_json(timeout=5.0, stream_id=1)
+        print(f"[client] Server replied: {reply.body!r}")
 
         print("[client] Done.")
 

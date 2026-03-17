@@ -34,6 +34,13 @@
 4. отправлять данные через `client.send(...)`
 5. читать `async for event in client.events():`
 
+Если нужен более прикладной старт без ручного `session_id`, используй:
+
+1. `await server.accept()`
+2. `await client.connect_session()`
+3. работать через `session.send(...)` / `await session.recv(...)`
+4. для структурированных сообщений использовать `session.send_json(...)` / `await session.recv_json(...)`
+
 ## Минимальный mental model
 
 - `session_id` это opaque идентификатор сессии из C++
@@ -97,10 +104,22 @@ Client(
 - `start()`
 - `stop()`
 - `await connect() -> NewConnectionEvent`
+- `await connect_session() -> Session`
 - `send(data, stream_id=1, session_id=None) -> bool`
 - `disconnect(session_id=None) -> bool`
 - `stats() -> dict`
 - `events() -> AsyncIterator[Event]`
+
+### Session
+
+- `session_id`
+- `remote_host`
+- `remote_port`
+- `send(data, stream_id=None) -> bool`
+- `await recv(timeout=None, stream_id=None) -> DataEvent`
+- `send_json(body, stream_id=None) -> bool`
+- `await recv_json(timeout=None, stream_id=None) -> Message`
+- `disconnect() -> bool`
 
 ## События
 

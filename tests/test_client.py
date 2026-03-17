@@ -44,6 +44,7 @@ class FakeVeilNode:
         self.connect_calls = 0
         self.connect_handler = None
         self.stats_payload = {"active_sessions": 0}
+        self.send_calls: list[tuple[int, bytes, int]] = []
 
     def start(self) -> None:
         self.start_calls += 1
@@ -60,6 +61,7 @@ class FakeVeilNode:
             self.on_error(0, f"connect failed for {host}:{port}")
 
     def send(self, session_id: int, data: bytes, stream_id: int) -> bool:
+        self.send_calls.append((session_id, data, stream_id))
         return True
 
     def disconnect(self, session_id: int) -> bool:
@@ -197,6 +199,65 @@ class ClientWrapperTests(unittest.IsolatedAsyncioTestCase):
 
         preserved = await client.next_event(timeout=0.1)
         self.assertEqual(preserved, queued)
+        client.stop()
+
+    async def test_connect_session_returns_session_wrapper(self) -> None:
+        client = client_mod.Client("127.0.0.1", 4433)
+        client.start()
+        client._node.connect_handler = lambda host, port: client._node.on_new_connection(555, host, port)
+
+        session = await client.connect_session()
+
+        self.assertEqual(session.session_id, 555)
+        self.assertEqual(session.remote_host, "127.0.0.1")
+        self.assertEqual(session.remote_port, 4433)
+        self.assertTrue(session.send(b"hello"))
+        self.assertEqual(client._node.send_calls, [(555, b"hello", 1)])
+        client.stop()
+
+    async def test_session_recv_filters_by_bound_session(self) -> None:
+        client = client_mod.Client("127.0.0.1", 4433)
+        client.start()
+        client._session_id = 101
+        session = client.session()
+        await client._queue.put(DataEvent(session_id=202, stream_id=1, data=b"other"))
+        await client._queue.put(DataEvent(session_id=101, stream_id=9, data=b"target"))
+
+        matched = await session.recv(timeout=0.1, stream_id=9)
+
+        self.assertEqual(matched.session_id, 101)
+        self.assertEqual(matched.data, b"target")
+        preserved = await client.next_event(timeout=0.1)
+        self.assertIsInstance(preserved, DataEvent)
+        self.assertEqual(preserved.session_id, 202)
+        client.stop()
+
+    async def test_session_send_json_serializes_payload(self) -> None:
+        client = client_mod.Client("127.0.0.1", 4433)
+        client._session_id = 919
+        session = client.session()
+
+        self.assertTrue(session.send_json({"type": "ping", "seq": 1}, stream_id=5))
+        self.assertEqual(
+            client._node.send_calls,
+            [(919, b'{"type":"ping","seq":1}', 5)],
+        )
+
+    async def test_session_recv_json_decodes_payload(self) -> None:
+        client = client_mod.Client("127.0.0.1", 4433)
+        client.start()
+        client._session_id = 919
+        session = client.session()
+        await client._queue.put(
+            DataEvent(session_id=919, stream_id=3, data=b'{"ok":true,"value":"pong"}')
+        )
+
+        message = await session.recv_json(timeout=0.1, stream_id=3)
+
+        self.assertEqual(message.session_id, 919)
+        self.assertEqual(message.stream_id, 3)
+        self.assertEqual(message.body, {"ok": True, "value": "pong"})
+        self.assertEqual(message.raw, b'{"ok":true,"value":"pong"}')
         client.stop()
 
 

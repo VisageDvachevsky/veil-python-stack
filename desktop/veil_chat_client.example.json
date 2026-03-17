@@ -1,0 +1,11 @@
+{
+  "host": "192.168.0.102",
+  "port": 4433,
+  "name": "guest",
+  "title": "Veil Chat Client",
+  "psk_hex": "abababababababababababababababababababababababababababababababab",
+  "protocol_wrapper": "none",
+  "persona_preset": "custom",
+  "retry_delay": 1.5,
+  "auto_connect": true
+}

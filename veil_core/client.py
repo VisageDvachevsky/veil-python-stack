@@ -32,6 +32,7 @@ from veil_core.events import (
     Event,
     NewConnectionEvent,
 )
+from veil_core.session import Session
 
 _ext, _EXT_AVAILABLE, _EXT_IMPORT_ERROR = load_extension()
 
@@ -141,6 +142,19 @@ class Client:
         self._session_id = event.session_id
         return event
 
+    async def connect_session(self) -> Session:
+        """
+        Connect and return a session-oriented wrapper for the established peer.
+        """
+        event = await self.connect()
+        return Session(
+            self,
+            session_id=event.session_id,
+            remote_host=event.remote_host,
+            remote_port=event.remote_port,
+            default_stream_id=1,
+        )
+
     def send(
         self,
         data: bytes,
@@ -210,6 +224,24 @@ class Client:
         """Pipeline statistics snapshot (see Server.stats())."""
         self._require_ext()
         return self._node.stats()
+
+    def session(self) -> Session:
+        """
+        Return a session wrapper for the currently connected peer.
+
+        Useful when a connection is already established and code wants a
+        concrete session object instead of carrying ``session_id`` around.
+        """
+        self._require_ext()
+        if self._session_id is None:
+            raise RuntimeError("Not connected — call connect() first.")
+        return Session(
+            self,
+            session_id=self._session_id,
+            remote_host=self._host,
+            remote_port=self._port,
+            default_stream_id=1,
+        )
 
     # ------------------------------------------------------------------
     # C++ callbacks

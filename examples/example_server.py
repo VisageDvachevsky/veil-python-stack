@@ -1,15 +1,15 @@
 """
-example_server.py — Echo server using the Veil protocol.
+example_server.py — JSON echo server using the Veil protocol.
 
 Run on the server machine:
     python example_server.py
 
-The server listens on UDP port 4433 and echoes every message back to the sender.
-Any Python developer can extend this without touching any C++ code.
+The server listens on UDP port 4433 and exchanges structured JSON messages
+over a real encrypted Veil session.
 """
 
 import asyncio
-from veil_core import DisconnectedEvent, ErrorEvent, NewConnectionEvent, Server, DataEvent
+from veil_core import Server
 
 
 PSK = bytes.fromhex("ab" * 32)
@@ -31,38 +31,40 @@ async def main() -> None:
         # enable_http_handshake_emulation=True,
     )
 
-    async with server:  # calls start() and stop() automatically
+    async with server:
         print("[server] Listening on UDP 0.0.0.0:4433 …")
 
-        # -----------------------------------------------------------------------
-        # 2. Consuming events — this is what your friend writes!
-        #    The heavy lifting (crypto, fragmentation, retransmit) is C++.
-        # -----------------------------------------------------------------------
-        async for event in server.events():
+        while True:
+            session = await server.accept(timeout=None)
+            print(
+                f"[server] New connection: {session.session_id:#x} "
+                f"from {session.remote_host}:{session.remote_port}"
+            )
 
-            if isinstance(event, NewConnectionEvent):
-                print(f"[server] New connection: {event.session_id:#x} "
-                      f"from {event.remote_host}:{event.remote_port}")
+            async def handle_session(active_session) -> None:
+                while True:
+                    try:
+                        message = await active_session.recv_json(timeout=None)
+                    except Exception as exc:
+                        print(f"[server] Session {active_session.session_id:#x} stopped: {exc}")
+                        break
 
-            elif isinstance(event, DataEvent):
-                print(f"[server] [{event.session_id:#x}] received "
-                      f"{len(event.data)} bytes on stream {event.stream_id}: "
-                      f"{event.data!r}")
+                    print(
+                        f"[server] [{active_session.session_id:#x}] stream={message.stream_id} "
+                        f"message={message.body!r}"
+                    )
+                    sent = active_session.send_json(
+                        {
+                            "type": "echo",
+                            "received": message.body,
+                        },
+                        stream_id=message.stream_id,
+                    )
+                    if not sent:
+                        print("[server] Warning: send queue full (back-pressure)")
+                        break
 
-                # Echo back on the same stream
-                sent = server.send(
-                    event.session_id,
-                    b"ECHO: " + event.data,
-                    stream_id=event.stream_id,
-                )
-                if not sent:
-                    print("[server] Warning: send queue full (back-pressure)")
-
-            elif isinstance(event, ErrorEvent):
-                print(f"[server] Error on {event.session_id:#x}: {event.message}")
-
-            elif isinstance(event, DisconnectedEvent):
-                print(f"[server] Session {event.session_id:#x} closed: {event.reason}")
+            asyncio.create_task(handle_session(session))
 
 
 if __name__ == "__main__":

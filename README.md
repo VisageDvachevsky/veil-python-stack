@@ -128,6 +128,74 @@ async def main():
 asyncio.run(main())
 ```
 
+### Session-oriented start point
+
+Если не хочется таскать `session_id` вручную, используй session API:
+
+```python
+import asyncio
+from veil_core import Client, Server
+
+PSK = bytes.fromhex("ab" * 32)
+
+async def main() -> None:
+    server = Server(port=4433, host="127.0.0.1", psk=PSK)
+    client = Client(host="127.0.0.1", port=4433, psk=PSK)
+
+    async with server, client:
+        accept_task = asyncio.create_task(server.accept(timeout=5.0))
+        client_session = await client.connect_session()
+        server_session = await accept_task
+
+        client_session.send(b"ping", stream_id=7)
+        event = await server_session.recv(timeout=5.0, stream_id=7)
+        server_session.send(b"pong", stream_id=event.stream_id)
+
+        reply = await client_session.recv(timeout=5.0, stream_id=7)
+        print(reply.data)
+
+asyncio.run(main())
+```
+
+Ключевые методы:
+
+- `await client.connect_session() -> Session`
+- `await server.accept() -> Session`
+- `session.send(data, stream_id=...)`
+- `await session.recv(timeout=..., stream_id=...)`
+- `session.send_json(body, stream_id=...)`
+- `await session.recv_json(timeout=..., stream_id=...)`
+- `session.disconnect()`
+
+### Desktop Client
+
+Для реального клиентского сценария без браузера теперь есть desktop client:
+
+- entrypoint: `desktop/veil_chat_client.py`
+- config template: `desktop/veil_chat_client.example.json`
+- Windows build script: `desktop/build_windows_client.ps1`
+- Inno Setup installer script: `desktop/veil_chat_client.iss`
+
+Локальный запуск:
+
+```bash
+LD_PRELOAD=/usr/lib/x86_64-linux-gnu/libasan.so.8 \
+ASAN_OPTIONS=detect_leaks=0 \
+python3 desktop/veil_chat_client.py --host 192.168.0.102 --port 4433 --name guest
+```
+
+Сборка на Windows:
+
+```powershell
+pwsh -File desktop/build_windows_client.ps1
+```
+
+После сборки рядом с `veil-chat-client.exe` кладётся `veil_chat_client.json`,
+чтобы клиент просто открыл `.exe` и сразу пошёл коннект на нужный сервер.
+
+Если нужен installer, после сборки `.exe` запускается Inno Setup со
+скриптом `desktop/veil_chat_client.iss`.
+
 ---
 
 ## Параметры Server / Client

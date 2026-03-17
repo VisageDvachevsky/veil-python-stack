@@ -31,6 +31,7 @@ from veil_core.events import (
     Event,
     NewConnectionEvent,
 )
+from veil_core.session import Session
 
 _ext, _EXT_AVAILABLE, _EXT_IMPORT_ERROR = load_extension()
 
@@ -192,6 +193,25 @@ class Server:
             timeout=timeout,
             session_id=session_id,
             stream_id=stream_id,
+        )
+
+    async def accept(self, *, timeout: float | None = None) -> Session:
+        """
+        Wait for the next established peer session and return a session wrapper.
+
+        Non-connection events remain pending for later consumers.
+        """
+        event = await self._event_buffer.recv_event(
+            self._queue,
+            timeout=timeout,
+            predicate=lambda item: isinstance(item, NewConnectionEvent),
+        )
+        return Session(
+            self,
+            session_id=event.session_id,
+            remote_host=event.remote_host,
+            remote_port=event.remote_port,
+            default_stream_id=0,
         )
 
     # ------------------------------------------------------------------

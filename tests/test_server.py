@@ -39,6 +39,7 @@ class FakeVeilNode:
         self.on_disconnected = None
         self.on_error = None
         self.disconnect_calls: list[int] = []
+        self.send_calls: list[tuple[int, bytes, int]] = []
         self.start_calls = 0
         self.stop_calls = 0
 
@@ -49,6 +50,7 @@ class FakeVeilNode:
         self.stop_calls += 1
 
     def send(self, session_id: int, data: bytes, stream_id: int) -> bool:
+        self.send_calls.append((session_id, data, stream_id))
         return True
 
     def disconnect(self, session_id: int) -> bool:
@@ -132,6 +134,66 @@ class ServerWrapperTests(unittest.IsolatedAsyncioTestCase):
 
         preserved = await server.next_event(timeout=0.1)
         self.assertEqual(preserved, queued)
+        server.stop()
+
+    async def test_accept_returns_session_wrapper_without_losing_other_events(self) -> None:
+        server = server_mod.Server(4433)
+        server.start()
+        await server._queue.put(DataEvent(session_id=10, stream_id=1, data=b"pending"))
+        server._on_new_connection(123, "127.0.0.1", 4567)
+        await asyncio.sleep(0)
+
+        session = await server.accept(timeout=0.1)
+
+        self.assertEqual(session.session_id, 123)
+        self.assertEqual(session.remote_host, "127.0.0.1")
+        self.assertEqual(session.remote_port, 4567)
+        self.assertTrue(session.send(b"hello"))
+        self.assertEqual(server._node.send_calls, [(123, b"hello", 0)])
+        preserved = await server.next_event(timeout=0.1)
+        self.assertIsInstance(preserved, DataEvent)
+        self.assertEqual(preserved.data, b"pending")
+        server.stop()
+
+    async def test_session_recv_uses_bound_session_id(self) -> None:
+        server = server_mod.Server(4433)
+        server.start()
+        session = server_mod.Session(server, session_id=303, remote_host="127.0.0.1", remote_port=5000)
+        await server._queue.put(DataEvent(session_id=404, stream_id=2, data=b"other"))
+        await server._queue.put(DataEvent(session_id=303, stream_id=7, data=b"target"))
+
+        matched = await session.recv(timeout=0.1, stream_id=7)
+
+        self.assertEqual(matched.session_id, 303)
+        self.assertEqual(matched.data, b"target")
+        preserved = await server.next_event(timeout=0.1)
+        self.assertIsInstance(preserved, DataEvent)
+        self.assertEqual(preserved.session_id, 404)
+        server.stop()
+
+    async def test_session_send_json_serializes_payload(self) -> None:
+        server = server_mod.Server(4433)
+        session = server_mod.Session(server, session_id=808, remote_host="127.0.0.1", remote_port=6000)
+
+        self.assertTrue(session.send_json({"type": "ack", "ok": True}))
+        self.assertEqual(
+            server._node.send_calls,
+            [(808, b'{"type":"ack","ok":true}', 1)],
+        )
+
+    async def test_session_recv_json_decodes_payload(self) -> None:
+        server = server_mod.Server(4433)
+        server.start()
+        session = server_mod.Session(server, session_id=808, remote_host="127.0.0.1", remote_port=6000)
+        await server._queue.put(
+            DataEvent(session_id=808, stream_id=1, data=b'{"kind":"hello","n":7}')
+        )
+
+        message = await session.recv_json(timeout=0.1)
+
+        self.assertEqual(message.session_id, 808)
+        self.assertEqual(message.stream_id, 1)
+        self.assertEqual(message.body, {"kind": "hello", "n": 7})
         server.stop()
 
 
