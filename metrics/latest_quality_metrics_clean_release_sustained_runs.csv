@@ -1,0 +1,6 @@
+run_index,payload_mb_s,ack_loss_ratio,ack_delivery_ratio,message_delivery_ratio,fragment_delivery_ratio,message_reassembly_ratio
+1,6.687535701412498,0.0,1.0,1.0,1.0,1.0
+2,7.804255292046159,0.0,1.0,1.0,1.0,1.0
+3,6.401277223804244,0.0,1.0,1.0,1.0,1.0
+4,6.430536674070919,0.0,1.0,1.0,1.0,1.0
+5,6.783596698788194,0.0,1.0,1.0,1.0,1.0

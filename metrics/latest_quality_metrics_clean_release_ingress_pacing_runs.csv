@@ -1,0 +1,17 @@
+config_name,run_index,payload_mb_s,message_delivery_ratio,fragment_delivery_ratio,callback_delivery_ratio,event_delivery_p95_ms,timed_out
+burst_batch8,1,91.59985373335695,1.0,1.0,1.0,37.659043,False
+burst_batch8,2,95.44000766383202,1.0,1.0,1.0,36.525024,False
+burst_batch8,3,96.06664488995004,1.0,1.0,1.0,36.2643,False
+burst_batch8,4,93.78129217962403,1.0,1.0,1.0,36.957739,False
+yield_batch4,1,86.77824714926615,1.0,1.0,1.0,38.892564,False
+yield_batch4,2,90.11443925511153,1.0,1.0,1.0,37.593804,False
+yield_batch4,3,92.5629660154787,1.0,1.0,1.0,36.468763,False
+yield_batch4,4,89.94063266176042,1.0,1.0,1.0,36.739154,False
+paced_100us_batch4,1,91.13202884822067,1.0,1.0,1.0,26.987173,False
+paced_100us_batch4,2,92.45872220796663,1.0,1.0,1.0,27.42277,False
+paced_100us_batch4,3,94.34643828163154,1.0,1.0,1.0,26.317595,False
+paced_100us_batch4,4,97.87734143704047,1.0,1.0,1.0,25.479051,False
+paced_500us_batch4,1,96.79998606078765,1.0,1.0,1.0,1.264102,False
+paced_500us_batch4,2,95.50413793164691,1.0,1.0,1.0,1.656971,False
+paced_500us_batch4,3,97.23495156034504,1.0,1.0,1.0,1.544973,False
+paced_500us_batch4,4,99.2574549793098,1.0,1.0,1.0,1.495956,False
