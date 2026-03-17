@@ -34,6 +34,8 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 from veil_core import Client, Server, Session
+from veil_core.events import DataEvent, DisconnectedEvent, ErrorEvent
+from veil_core.message import message_from_event
 
 
 PSK = bytes.fromhex("ab" * 32)
@@ -504,7 +506,8 @@ class LocalChatApp:
                 port=self._veil_port,
                 host=self._veil_host,
                 psk=self._psk,
-                session_idle_timeout_ms=30_000,
+                # Keep the session alive while a human is looking at the UI.
+                session_idle_timeout_ms=0,
             )
             self._server.start()
             self._control_task = asyncio.create_task(self._accept_loop())
@@ -517,7 +520,8 @@ class LocalChatApp:
                 port=self._veil_port,
                 psk=self._psk,
                 handshake_timeout_ms=5_000,
-                session_idle_timeout_ms=30_000,
+                # Keep the session alive while a human is looking at the UI.
+                session_idle_timeout_ms=0,
             )
             self._client.start()
             self._control_task = asyncio.create_task(self._connect_loop())
@@ -556,6 +560,9 @@ class LocalChatApp:
     async def _accept_loop(self) -> None:
         assert self._server is not None
         while self._running:
+            if self._active_session is not None:
+                await asyncio.sleep(0.2)
+                continue
             try:
                 session = await self._server.accept(timeout=0.5)
             except asyncio.TimeoutError:
@@ -603,9 +610,10 @@ class LocalChatApp:
         self._reader_task = asyncio.create_task(self._session_reader(session, generation))
 
     async def _session_reader(self, session: Session, generation: int) -> None:
+        owner = session._owner
         while self._running:
             try:
-                message = await session.recv_json(timeout=0.5, stream_id=1)
+                event = await owner.next_event(timeout=0.5)
             except asyncio.TimeoutError:
                 continue
             except asyncio.CancelledError:
@@ -619,18 +627,39 @@ class LocalChatApp:
                     self._publish_status(phase="disconnected")
                 return
 
-            body = message.body
-            sender = "peer"
-            if isinstance(body, dict):
-                sender = str(body.get("sender", "peer"))
-            self._record_entry(
-                ChatEntry(
-                    origin="remote",
-                    label=f"remote · {sender}",
-                    text=pretty_json(body),
-                    timestamp=utc_iso(),
+            if getattr(event, "session_id", None) != session.session_id:
+                continue
+
+            if isinstance(event, DataEvent):
+                if event.stream_id != 1:
+                    continue
+                message = message_from_event(event)
+                body = message.body
+                sender = "peer"
+                if isinstance(body, dict):
+                    sender = str(body.get("sender", "peer"))
+                self._record_entry(
+                    ChatEntry(
+                        origin="remote",
+                        label=f"remote · {sender}",
+                        text=pretty_json(body),
+                        timestamp=utc_iso(),
+                    )
                 )
-            )
+                continue
+
+            if isinstance(event, ErrorEvent):
+                self._record_system(f"session {session.session_id:#x} error: {event.message}")
+                continue
+
+            if isinstance(event, DisconnectedEvent):
+                if self._active_session is session and generation == self._session_generation:
+                    self._active_session = None
+                    self._record_system(
+                        f"session {session.session_id:#x} closed: {event.reason}"
+                    )
+                    self._publish_status(phase="disconnected")
+                return
 
     async def _handle_index(self, _: web.Request) -> web.Response:
         return web.Response(text=HTML_PAGE, content_type="text/html")
