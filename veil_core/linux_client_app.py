@@ -134,6 +134,7 @@ class LinuxClientConfig:
     auto_connect: bool = False
     protocol_wrapper: str = "none"
     persona_preset: str = "custom"
+    suspend_conflicting_services: bool = True
 
     @property
     def psk(self) -> bytes:
@@ -275,6 +276,10 @@ def _run_ip(*args: str, check: bool = True) -> subprocess.CompletedProcess[str]:
     return subprocess.run(["ip", *args], check=check, capture_output=True, text=True)
 
 
+def _run_command(*args: str, check: bool = True) -> subprocess.CompletedProcess[str]:
+    return subprocess.run(list(args), check=check, capture_output=True, text=True)
+
+
 def _route_info_for_host(host: str) -> dict[str, str]:
     route = _run_ip("-4", "route", "get", host).stdout.strip().split()
     result: dict[str, str] = {"host": host}
@@ -287,6 +292,75 @@ def _route_info_for_host(host: str) -> dict[str, str]:
     if "dev" not in result:
         raise RuntimeError(f"Could not determine underlay route for {host}")
     return result
+
+
+def _systemctl_available() -> bool:
+    return shutil.which("systemctl") is not None
+
+
+def _service_is_active(service_name: str) -> bool:
+    if not _systemctl_available():
+        return False
+    completed = _run_command("systemctl", "is-active", service_name, check=False)
+    return completed.returncode == 0 and completed.stdout.strip() == "active"
+
+
+def _service_is_enabled(service_name: str) -> bool:
+    if not _systemctl_available():
+        return False
+    completed = _run_command("systemctl", "is-enabled", service_name, check=False)
+    return completed.returncode == 0 and completed.stdout.strip() in {"enabled", "static", "generated", "alias"}
+
+
+def _stop_service(service_name: str) -> None:
+    if _systemctl_available():
+        _run_command("systemctl", "stop", service_name)
+
+
+def _start_service(service_name: str) -> None:
+    if _systemctl_available():
+        _run_command("systemctl", "start", service_name)
+
+
+def _interface_exists(name: str) -> bool:
+    return _run_ip("link", "show", "dev", name, check=False).returncode == 0
+
+
+def _set_nm_managed(name: str, managed: bool) -> None:
+    nmcli = shutil.which("nmcli")
+    if not nmcli or not _interface_exists(name):
+        return
+    _run_command(nmcli, "device", "set", name, "managed", "yes" if managed else "no", check=False)
+
+
+def _detect_conflicting_services() -> list[dict[str, Any]]:
+    conflicts: list[dict[str, Any]] = []
+    if _service_is_active("clash-verge-service.service") or _interface_exists("Mihomo"):
+        conflicts.append(
+            {
+                "service": "clash-verge-service.service",
+                "interface": "Mihomo",
+                "was_active": _service_is_active("clash-verge-service.service"),
+                "was_enabled": _service_is_enabled("clash-verge-service.service"),
+                "interface_present": _interface_exists("Mihomo"),
+            }
+        )
+    return conflicts
+
+
+def _suspend_conflicting_services() -> list[dict[str, Any]]:
+    suspended: list[dict[str, Any]] = []
+    for conflict in _detect_conflicting_services():
+        if conflict["was_active"]:
+            _stop_service(conflict["service"])
+            suspended.append(conflict)
+    return suspended
+
+
+def _restore_conflicting_services(conflicts: list[dict[str, Any]]) -> None:
+    for conflict in conflicts:
+        if conflict.get("was_active"):
+            _start_service(conflict["service"])
 
 
 def _write_runtime_state(path: Path, payload: dict[str, Any]) -> None:
@@ -312,6 +386,7 @@ def _wait_for_tun(name: str, *, timeout_seconds: float = 30.0) -> None:
 def start_runtime(paths: LinuxClientPaths, config: LinuxClientConfig) -> dict[str, Any]:
     files = runtime_files(paths, config)
     paths.runtime_dir.mkdir(parents=True, exist_ok=True)
+    suspended_conflicts: list[dict[str, Any]] = []
 
     if files.pid_file.exists():
         try:
@@ -326,6 +401,9 @@ def start_runtime(paths: LinuxClientPaths, config: LinuxClientConfig) -> dict[st
         _run_ip("route", "replace", f"{config.server_host}/32", "via", underlay["via"], "dev", underlay["dev"])
     else:
         _run_ip("route", "replace", f"{config.server_host}/32", "dev", underlay["dev"])
+
+    if config.suspend_conflicting_services:
+        suspended_conflicts = _suspend_conflicting_services()
 
     command = [
         env_python := (shutil.which("python3") or sys.executable),
@@ -378,6 +456,7 @@ def start_runtime(paths: LinuxClientPaths, config: LinuxClientConfig) -> dict[st
             "server_port": config.server_port,
             "tun_name": config.tun_name,
             "underlay_route": underlay,
+            "suspended_conflicts": suspended_conflicts,
             "python": env_python,
             "command": command,
         },
@@ -385,6 +464,7 @@ def start_runtime(paths: LinuxClientPaths, config: LinuxClientConfig) -> dict[st
 
     try:
         _wait_for_tun(config.tun_name)
+        _set_nm_managed(config.tun_name, managed=False)
         _run_ip("route", "replace", "0.0.0.0/1", "dev", config.tun_name)
         _run_ip("route", "replace", "128.0.0.0/1", "dev", config.tun_name)
     except Exception:
@@ -396,12 +476,14 @@ def start_runtime(paths: LinuxClientPaths, config: LinuxClientConfig) -> dict[st
         "pid": process.pid,
         "tun_name": config.tun_name,
         "log_path": str(files.log_file),
+        "suspended_conflicts": suspended_conflicts,
     }
 
 
 def stop_runtime(paths: LinuxClientPaths, config: LinuxClientConfig) -> dict[str, Any]:
     files = runtime_files(paths, config)
     state = _read_runtime_state(files.state_file)
+    suspended_conflicts = list(state.get("suspended_conflicts", []))
 
     if files.pid_file.exists():
         try:
@@ -426,12 +508,14 @@ def stop_runtime(paths: LinuxClientPaths, config: LinuxClientConfig) -> dict[str
     if config.server_host:
         _run_ip("route", "del", f"{config.server_host}/32", check=False)
     _run_ip("link", "delete", "dev", config.tun_name, check=False)
+    _restore_conflicting_services(suspended_conflicts)
     files.state_file.unlink(missing_ok=True)
 
     return {
         "stopped": True,
         "tun_name": config.tun_name,
         "had_state": bool(state),
+        "restored_conflicts": suspended_conflicts,
     }
 
 
@@ -465,6 +549,7 @@ def read_runtime_status(paths: LinuxClientPaths, config: LinuxClientConfig) -> d
         "client_name": config.client_name,
         "protocol_wrapper": config.protocol_wrapper,
         "persona_preset": config.persona_preset,
+        "suspend_conflicting_services": config.suspend_conflicting_services,
         "config_path": str(paths.config_path),
         "log_path": str(files.log_file),
         "ctl_wrapper_path": str(paths.ctl_wrapper_path),

@@ -192,6 +192,49 @@ class LinuxClientAppTests(unittest.TestCase):
                 self.assertTrue(stopped["stopped"])
                 self.assertFalse(files.pid_file.exists())
 
+    def test_start_and_stop_runtime_suspend_and_restore_conflicting_service(self) -> None:
+        with tempfile.TemporaryDirectory() as tempdir:
+            paths = self.make_paths(tempdir)
+            config = LinuxClientConfig(server_host="8.8.8.8", tun_name="veilrt1", suspend_conflicting_services=True)
+            files = runtime_files(paths, config)
+
+            process = mock.Mock()
+            process.pid = 5151
+            calls: list[list[str]] = []
+
+            def fake_run(args, check=True, capture_output=True, text=True):
+                calls.append(args)
+                joined = " ".join(args)
+                result = mock.Mock()
+                result.returncode = 0
+                result.stdout = ""
+                if joined == "ip -4 route get 8.8.8.8":
+                    result.stdout = "8.8.8.8 via 192.168.0.1 dev eth0 src 192.168.0.2 cache\n"
+                elif joined == "systemctl is-active clash-verge-service.service":
+                    result.stdout = "active\n"
+                elif joined == "systemctl is-enabled clash-verge-service.service":
+                    result.stdout = "enabled\n"
+                return result
+
+            with (
+                mock.patch("subprocess.run", side_effect=fake_run),
+                mock.patch("subprocess.Popen", return_value=process),
+                mock.patch("os.kill", side_effect=[None, ProcessLookupError()]),
+                mock.patch("shutil.which", side_effect=lambda name: f"/usr/bin/{name}"),
+            ):
+                payload = start_runtime(paths, config)
+                state = json.loads(files.state_file.read_text(encoding="utf-8"))
+                self.assertEqual(payload["suspended_conflicts"][0]["service"], "clash-verge-service.service")
+                self.assertEqual(state["suspended_conflicts"][0]["interface"], "Mihomo")
+
+                stopped = stop_runtime(paths, config)
+                self.assertEqual(stopped["restored_conflicts"][0]["service"], "clash-verge-service.service")
+
+            joined_calls = [" ".join(call) for call in calls]
+            self.assertIn("systemctl stop clash-verge-service.service", joined_calls)
+            self.assertIn("systemctl start clash-verge-service.service", joined_calls)
+            self.assertIn("/usr/bin/nmcli device set veilrt1 managed no", joined_calls)
+
 
 if __name__ == "__main__":
     unittest.main()
