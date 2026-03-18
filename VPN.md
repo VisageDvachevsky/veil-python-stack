@@ -251,12 +251,27 @@ curl -fsSL https://raw.githubusercontent.com/VisageDvachevsky/veil-core/main/dep
 Bootstrap-скрипты сами:
 
 - определяют пакетный менеджер
-- подтягивают или обновляют репозиторий
+- могут скачать готовый Linux artifact через `ARTIFACT_PATH` / `ARTIFACT_URL` / `ARTIFACT_BASE_URL`
+- если artifact не задан, подтягивают или обновляют репозиторий
 - инициализируют сабмодули
 - создают `venv`
-- собирают Python binding
+- собирают Python binding только как fallback
 - ставят server/client launcher’ы
 - на сервере поднимают `systemd`-service
+
+Сборка artifact:
+
+```bash
+cd veil-coreeee
+PYTHON_BIN=python3 deploy/build_linux_artifact.sh
+```
+
+Установка сервера из локального artifact:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/VisageDvachevsky/veil-core/main/deploy/bootstrap_install_linux_server.sh | \
+  sudo PUBLIC_HOST=185.23.35.241 ARTIFACT_PATH=/root/veil-linux-x86_64-cp312.tar.gz bash
+```
 
 ## Что это ещё не делает
 
