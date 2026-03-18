@@ -260,6 +260,23 @@ class ClientWrapperTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(message.raw, b'{"ok":true,"value":"pong"}')
         client.stop()
 
+    async def test_session_recv_event_filters_by_bound_session(self) -> None:
+        client = client_mod.Client("127.0.0.1", 4433)
+        client.start()
+        client._session_id = 919
+        session = client.session()
+        await client._queue.put(DisconnectedEvent(session_id=202, reason="other"))
+        await client._queue.put(DisconnectedEvent(session_id=919, reason="target"))
+
+        event = await session.recv_event(timeout=0.1, predicate=lambda item: isinstance(item, DisconnectedEvent))
+
+        self.assertIsInstance(event, DisconnectedEvent)
+        self.assertEqual(event.session_id, 919)
+        self.assertEqual(event.reason, "target")
+        preserved = await client.next_event(timeout=0.1)
+        self.assertEqual(preserved.session_id, 202)
+        client.stop()
+
 
 if __name__ == "__main__":
     unittest.main()

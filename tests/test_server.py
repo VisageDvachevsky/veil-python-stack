@@ -12,7 +12,7 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 from veil_core import server as server_mod  # noqa: E402
-from veil_core.events import DataEvent, ErrorEvent  # noqa: E402
+from veil_core.events import DataEvent, DisconnectedEvent, ErrorEvent  # noqa: E402
 
 
 class FakeNodeConfig:
@@ -194,6 +194,22 @@ class ServerWrapperTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(message.session_id, 808)
         self.assertEqual(message.stream_id, 1)
         self.assertEqual(message.body, {"kind": "hello", "n": 7})
+        server.stop()
+
+    async def test_session_recv_event_filters_by_bound_session(self) -> None:
+        server = server_mod.Server(4433)
+        server.start()
+        session = server_mod.Session(server, session_id=515, remote_host="127.0.0.1", remote_port=6000)
+        await server._queue.put(DisconnectedEvent(session_id=999, reason="other"))
+        await server._queue.put(DisconnectedEvent(session_id=515, reason="target"))
+
+        event = await session.recv_event(timeout=0.1, predicate=lambda item: isinstance(item, DisconnectedEvent))
+
+        self.assertIsInstance(event, DisconnectedEvent)
+        self.assertEqual(event.session_id, 515)
+        self.assertEqual(event.reason, "target")
+        preserved = await server.next_event(timeout=0.1)
+        self.assertEqual(preserved.session_id, 999)
         server.stop()
 
 

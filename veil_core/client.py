@@ -21,6 +21,7 @@ Example:
 from __future__ import annotations
 
 import asyncio
+from collections.abc import Callable
 from typing import AsyncIterator, Optional
 
 from veil_core._event_buffer import EventBuffer
@@ -218,6 +219,20 @@ class Client:
             timeout=timeout,
             session_id=session_id,
             stream_id=stream_id,
+        )
+
+    async def recv_event(
+        self,
+        *,
+        timeout: float | None = None,
+        predicate: Callable[[Event], bool] | None = None,
+    ) -> Event:
+        """Wait for the next event matching *predicate*."""
+        matcher = predicate or (lambda _event: True)
+        return await self._event_buffer.recv_event(
+            self._queue,
+            timeout=timeout,
+            predicate=matcher,
         )
 
     def stats(self) -> dict:

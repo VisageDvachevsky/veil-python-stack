@@ -1,0 +1,89 @@
+from __future__ import annotations
+
+import argparse
+import asyncio
+import subprocess
+import sys
+from pathlib import Path
+
+
+ROOT = Path(__file__).resolve().parents[1]
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
+
+from veil_core import LinuxTunConfig, LinuxVpnProxyServer
+from veil_core.linux_server_app import load_server_config
+
+
+def _iptables(*args: str) -> None:
+    subprocess.run(["iptables", *args], check=True)
+
+
+def ensure_server_forwarding(config) -> None:
+    subprocess.run(["sysctl", "-w", "net.ipv4.ip_forward=1"], check=True, capture_output=True)
+    _iptables(
+        "-t",
+        "nat",
+        "-C",
+        "POSTROUTING",
+        "-s",
+        "10.200.0.0/30",
+        "-o",
+        config.public_interface,
+        "-j",
+        "MASQUERADE",
+    )
+
+
+def ensure_rule(command: list[str], add_command: list[str]) -> None:
+    result = subprocess.run(command, check=False, capture_output=True)
+    if result.returncode != 0:
+        subprocess.run(add_command, check=True)
+
+
+def configure_network(config) -> None:
+    subprocess.run(["sysctl", "-w", "net.ipv4.ip_forward=1"], check=True, capture_output=True)
+    ensure_rule(
+        ["iptables", "-t", "nat", "-C", "POSTROUTING", "-s", "10.200.0.0/30", "-o", config.public_interface, "-j", "MASQUERADE"],
+        ["iptables", "-t", "nat", "-A", "POSTROUTING", "-s", "10.200.0.0/30", "-o", config.public_interface, "-j", "MASQUERADE"],
+    )
+    ensure_rule(
+        ["iptables", "-C", "FORWARD", "-i", config.tun_name, "-o", config.public_interface, "-j", "ACCEPT"],
+        ["iptables", "-A", "FORWARD", "-i", config.tun_name, "-o", config.public_interface, "-j", "ACCEPT"],
+    )
+    ensure_rule(
+        ["iptables", "-C", "FORWARD", "-i", config.public_interface, "-o", config.tun_name, "-m", "conntrack", "--ctstate", "RELATED,ESTABLISHED", "-j", "ACCEPT"],
+        ["iptables", "-A", "FORWARD", "-i", config.public_interface, "-o", config.tun_name, "-m", "conntrack", "--ctstate", "RELATED,ESTABLISHED", "-j", "ACCEPT"],
+    )
+
+
+async def main() -> None:
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--config", type=Path, required=True)
+    args = parser.parse_args()
+
+    config = load_server_config(args.config)
+    configure_network(config)
+
+    server = LinuxVpnProxyServer(
+        port=config.bind_port,
+        host=config.bind_host,
+        tun_config=LinuxTunConfig(
+            name=config.tun_name,
+            address_cidr=config.tun_address,
+            peer_address=config.tun_peer,
+            mtu=config.packet_mtu,
+        ),
+        local_name=config.server_name,
+        packet_mtu=config.packet_mtu,
+        keepalive_interval=config.keepalive_interval,
+        keepalive_timeout=config.keepalive_timeout,
+        psk=bytes.fromhex(config.psk_hex),
+        protocol_wrapper=config.protocol_wrapper,
+        persona_preset=config.persona_preset,
+    )
+    await server.serve_forever()
+
+
+if __name__ == "__main__":
+    asyncio.run(main())

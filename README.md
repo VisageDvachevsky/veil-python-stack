@@ -9,6 +9,7 @@ Python-обёртка над криптографическим транспор
 
 Если тебе нужно быстро начать без чтения C++:
 - смотри [HANDOFF.md](HANDOFF.md)
+- для packet-oriented overlay смотри [VPN.md](VPN.md)
 - для минимального живого прогона смотри [smoke_roundtrip.py](examples/smoke_roundtrip.py)
 - для quality/perf baseline смотри [QUALITY.md](QUALITY.md) и артефакты в [metrics](metrics)
 
@@ -195,6 +196,26 @@ pwsh -File desktop/build_windows_client.ps1
 
 Если нужен installer, после сборки `.exe` запускается Inno Setup со
 скриптом `desktop/veil_chat_client.iss`.
+
+### Linux VPN Client
+
+Для Linux теперь есть отдельный VPN client stack:
+
+- GUI client: `desktop/veil_vpn_client.py`
+- config template: `desktop/veil_vpn_client.example.json`
+- CLI controller: `desktop/veil_vpn_ctl.py`
+- installer: `desktop/install_linux_client.py`
+
+Быстрый старт:
+
+```bash
+cd submodules/veil-python-stack
+python3 desktop/install_linux_client.py
+~/.local/bin/veil-vpn doctor
+~/.local/bin/veil-vpn-gui
+```
+
+Подробности по TUN/full-tunnel flow смотри в [VPN.md](VPN.md).
 
 ---
 

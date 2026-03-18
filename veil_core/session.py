@@ -1,8 +1,9 @@
 from __future__ import annotations
 
+from collections.abc import Callable
 from dataclasses import dataclass
 
-from veil_core.events import DataEvent
+from veil_core.events import DataEvent, Event
 from veil_core.message import Message, encode_json_message, message_from_event
 
 
@@ -83,6 +84,25 @@ class Session:
             session_id=self._info.session_id,
             stream_id=stream_id,
         )
+
+    async def recv_event(
+        self,
+        *,
+        timeout: float | None = None,
+        predicate: Callable[[Event], bool] | None = None,
+    ) -> Event:
+        owner = self._owner
+        if not hasattr(owner, "recv_event"):
+            raise RuntimeError("Session owner does not support recv_event()")
+
+        def matcher(event: Event) -> bool:
+            if event.session_id != self._info.session_id:
+                return False
+            if predicate is not None and not predicate(event):
+                return False
+            return True
+
+        return await owner.recv_event(timeout=timeout, predicate=matcher)
 
     def send_json(self, body: object, *, stream_id: int | None = None) -> bool:
         return self.send(encode_json_message(body), stream_id=stream_id)
