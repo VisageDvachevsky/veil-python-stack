@@ -134,7 +134,7 @@ class LinuxClientConfig:
     auto_connect: bool = False
     protocol_wrapper: str = "none"
     persona_preset: str = "custom"
-    suspend_conflicting_services: bool = True
+    suspend_conflicting_services: bool = False
 
     @property
     def psk(self) -> bytes:
@@ -348,6 +348,20 @@ def _detect_conflicting_services() -> list[dict[str, Any]]:
     return conflicts
 
 
+def _format_conflict_message(conflicts: list[dict[str, Any]]) -> str:
+    parts: list[str] = []
+    for conflict in conflicts:
+        labels: list[str] = []
+        if conflict.get("service"):
+            labels.append(f"service={conflict['service']}")
+        if conflict.get("interface_present"):
+            labels.append(f"interface={conflict['interface']}")
+        if labels:
+            parts.append(", ".join(labels))
+    joined = "; ".join(parts) if parts else "unknown conflict"
+    return f"Conflicting VPN/TUN detected: {joined}. Disable the other VPN client first, then connect Veil."
+
+
 def _suspend_conflicting_services() -> list[dict[str, Any]]:
     suspended: list[dict[str, Any]] = []
     for conflict in _detect_conflicting_services():
@@ -387,6 +401,7 @@ def start_runtime(paths: LinuxClientPaths, config: LinuxClientConfig) -> dict[st
     files = runtime_files(paths, config)
     paths.runtime_dir.mkdir(parents=True, exist_ok=True)
     suspended_conflicts: list[dict[str, Any]] = []
+    conflicts = _detect_conflicting_services()
 
     if files.pid_file.exists():
         try:
@@ -401,6 +416,9 @@ def start_runtime(paths: LinuxClientPaths, config: LinuxClientConfig) -> dict[st
         _run_ip("route", "replace", f"{config.server_host}/32", "via", underlay["via"], "dev", underlay["dev"])
     else:
         _run_ip("route", "replace", f"{config.server_host}/32", "dev", underlay["dev"])
+
+    if conflicts and not config.suspend_conflicting_services:
+        raise RuntimeError(_format_conflict_message(conflicts))
 
     if config.suspend_conflicting_services:
         suspended_conflicts = _suspend_conflicting_services()

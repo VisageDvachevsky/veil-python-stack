@@ -174,6 +174,12 @@ class LinuxClientAppTests(unittest.TestCase):
                 result.returncode = 0
                 if "route get 8.8.8.8" in joined:
                     result.stdout = "8.8.8.8 via 192.168.0.1 dev eth0 src 192.168.0.2 cache\n"
+                elif joined == "systemctl is-active clash-verge-service.service":
+                    result.returncode = 3
+                    result.stdout = "inactive\n"
+                elif joined == "ip link show dev Mihomo":
+                    result.returncode = 1
+                    result.stdout = ""
                 else:
                     result.stdout = ""
                 return result
@@ -234,6 +240,31 @@ class LinuxClientAppTests(unittest.TestCase):
             self.assertIn("systemctl stop clash-verge-service.service", joined_calls)
             self.assertIn("systemctl start clash-verge-service.service", joined_calls)
             self.assertIn("/usr/bin/nmcli device set veilrt1 managed no", joined_calls)
+
+    def test_start_runtime_refuses_conflicting_service_by_default(self) -> None:
+        with tempfile.TemporaryDirectory() as tempdir:
+            paths = self.make_paths(tempdir)
+            config = LinuxClientConfig(server_host="8.8.8.8", tun_name="veilrt2")
+
+            def fake_run(args, check=True, capture_output=True, text=True):
+                joined = " ".join(args)
+                result = mock.Mock()
+                result.returncode = 0
+                result.stdout = ""
+                if joined == "systemctl is-active clash-verge-service.service":
+                    result.stdout = "active\n"
+                elif joined == "systemctl is-enabled clash-verge-service.service":
+                    result.stdout = "enabled\n"
+                elif joined == "ip -4 route get 8.8.8.8":
+                    result.stdout = "8.8.8.8 via 192.168.0.1 dev eth0 src 192.168.0.2 cache\n"
+                return result
+
+            with (
+                mock.patch("subprocess.run", side_effect=fake_run),
+                mock.patch("shutil.which", side_effect=lambda name: f"/usr/bin/{name}"),
+            ):
+                with self.assertRaisesRegex(RuntimeError, "Disable the other VPN client first"):
+                    start_runtime(paths, config)
 
 
 if __name__ == "__main__":
