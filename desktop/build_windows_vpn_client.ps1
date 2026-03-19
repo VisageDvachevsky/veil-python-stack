@@ -48,9 +48,24 @@ if (Test-Path (Join-Path $projectRoot "CMakeLists.txt")) {
   Assert-LastExitCode "cmake build _veil_core_ext"
 }
 
-$extension = Get-ChildItem -Path (Join-Path $root "veil_core") -Filter "_veil_core_ext*.pyd" -ErrorAction SilentlyContinue | Select-Object -First 1
+$extensionSearchRoots = @(
+  (Join-Path $root "veil_core"),
+  (Join-Path $root "veil_core\\Release")
+)
+
+$extension = $null
+foreach ($searchRoot in $extensionSearchRoots) {
+  if (-not (Test-Path $searchRoot)) {
+    continue
+  }
+  $extension = Get-ChildItem -Path $searchRoot -Filter "_veil_core_ext*.pyd" -ErrorAction SilentlyContinue | Select-Object -First 1
+  if ($extension) {
+    break
+  }
+}
+
 if (-not $extension) {
-  throw "Could not find compiled _veil_core_ext .pyd in $root\\veil_core after CMake build"
+  throw "Could not find compiled _veil_core_ext .pyd in $($extensionSearchRoots -join ', ') after CMake build"
 }
 
 New-Item -ItemType Directory -Force -Path $distRoot | Out-Null
