@@ -16,6 +16,7 @@ utils::TokenBucket make_handshake_rate_limiter() {
   return utils::TokenBucket(100.0, std::chrono::milliseconds(1000));
 }
 
+constexpr auto kHandshakeClockSkewTolerance = std::chrono::seconds(10);
 constexpr std::uint8_t kControlTypeDisconnect = 1;
 
 } // namespace
@@ -92,7 +93,7 @@ void VeilNode::start() {
     pending_client_initiator_.reset();
     if (!config_.is_client) {
       responder_ = std::make_unique<handshake::HandshakeResponder>(
-          config_.psk, std::chrono::milliseconds(200),
+          config_.psk, kHandshakeClockSkewTolerance,
           make_handshake_rate_limiter());
     } else {
       responder_.reset();
@@ -174,7 +175,7 @@ void VeilNode::connect(const std::string &host, std::uint16_t port) {
   {
     std::lock_guard<std::mutex> handshake_lock(handshake_mutex_);
     auto initiator = std::make_unique<handshake::HandshakeInitiator>(
-        config_.psk, std::chrono::milliseconds(200));
+        config_.psk, kHandshakeClockSkewTolerance);
     init_packet = initiator->create_init();
     pending_client_endpoint_ = ep;
     pending_client_initiator_ = std::move(initiator);

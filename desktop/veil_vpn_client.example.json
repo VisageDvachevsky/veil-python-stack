@@ -2,8 +2,8 @@
   "server_host": "185.23.35.241",
   "server_port": 4433,
   "client_name": "veil-client",
-  "psk_hex": "abababababababababababababababababababababababababababababababab",
-  "tun_name": "veilfull0",
+  "psk_hex": "87512f2d2d75b74c101a7e00a21c8ed0f463b00551f7088e2b028e8a7b2a542d",
+  "adapter_name": "VeilVPN",
   "tun_address": "10.200.0.2/30",
   "tun_peer": "10.200.0.1",
   "packet_mtu": 1300,
@@ -11,6 +11,12 @@
   "keepalive_timeout": 30.0,
   "reconnect": true,
   "auto_connect": false,
+  "full_tunnel": true,
+  "disable_system_proxy": true,
+  "dns_servers": [
+    "1.1.1.1",
+    "1.0.0.1"
+  ],
   "protocol_wrapper": "none",
   "persona_preset": "custom"
 }

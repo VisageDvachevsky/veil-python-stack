@@ -217,6 +217,24 @@ python3 desktop/install_linux_client.py
 
 Подробности по TUN/full-tunnel flow смотри в [VPN.md](VPN.md).
 
+### Windows VPN Client
+
+Для Windows теперь есть отдельный VPN packaging/runtime path:
+
+- GUI client: `desktop/veil_vpn_client.py`
+- Windows controller: `desktop/veil_vpn_windows_ctl.py`
+- Windows agent: `desktop/veil_vpn_agent.py`
+- Wintun bridge: `veil_core/windows_wintun.py`
+- build script: `desktop/build_windows_vpn_client.ps1`
+- installer script: `desktop/veil_vpn_client_windows.iss`
+- operator guide: [WINDOWS_VPN.md](WINDOWS_VPN.md)
+
+Целевой deliverable:
+
+- `VeilVPN-Setup-x64.exe`
+
+Этот installer тащит GUI, agent, runtime, config template и `wintun.dll` в одном пакете.
+
 ---
 
 ## Параметры Server / Client
