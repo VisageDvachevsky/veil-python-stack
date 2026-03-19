@@ -4,6 +4,7 @@ $root = Split-Path -Parent $PSScriptRoot
 $projectRoot = Resolve-Path (Join-Path $root "..\..")
 $cmakeBuildDir = Join-Path $projectRoot "build\py-vs-vpn"
 $distRoot = Join-Path $root "dist\windows-vpn"
+$installerOutputDir = Join-Path $distRoot "installer"
 $installerScript = Join-Path $PSScriptRoot "veil_vpn_client_windows.iss"
 $wintunSource = $env:VEIL_WINTUN_DLL
 $wintunVersion = "0.14.1"
@@ -70,6 +71,8 @@ if (-not $extension) {
 
 New-Item -ItemType Directory -Force -Path $distRoot | Out-Null
 Get-ChildItem -Force $distRoot -ErrorAction SilentlyContinue | Where-Object { $_.Name -ne "installer" } | Remove-Item -Recurse -Force
+New-Item -ItemType Directory -Force -Path $installerOutputDir | Out-Null
+Get-ChildItem -Force $installerOutputDir -ErrorAction SilentlyContinue | Remove-Item -Recurse -Force
 
 pyinstaller `
   --noconfirm `
@@ -130,6 +133,15 @@ $iscc = Get-Command "ISCC.exe" -ErrorAction SilentlyContinue
 if ($iscc) {
   & $iscc.Source /DSourceDir="$distRoot" $installerScript
   Assert-LastExitCode "ISCC"
+
+  $installer = Get-ChildItem -Path $root, $PSScriptRoot -Recurse -Filter "VeilVPN-Setup-x64.exe" -ErrorAction SilentlyContinue | Select-Object -First 1
+  if (-not $installer) {
+    throw "ISCC completed but VeilVPN-Setup-x64.exe was not found under $root or $PSScriptRoot"
+  }
+
+  if ($installer.DirectoryName -ne $installerOutputDir) {
+    Copy-Item -Force $installer.FullName (Join-Path $installerOutputDir $installer.Name)
+  }
 }
 
 Write-Host ""
@@ -139,6 +151,9 @@ Write-Host "  $distRoot\veil-vpn-agent.exe"
 Write-Host "  $distRoot\veil_vpn_client.json"
 if (Test-Path (Join-Path $distRoot "wintun.dll")) {
   Write-Host "  $distRoot\wintun.dll"
+}
+if (Test-Path (Join-Path $installerOutputDir "VeilVPN-Setup-x64.exe")) {
+  Write-Host "  $installerOutputDir\VeilVPN-Setup-x64.exe"
 }
 Write-Host ""
 Write-Host "If Inno Setup is installed, the script also produces a single setup executable."
