@@ -41,10 +41,10 @@ class LinuxServerAppTests(unittest.TestCase):
     def test_save_and_load_server_config(self) -> None:
         with tempfile.TemporaryDirectory() as tempdir:
             path = Path(tempdir) / "server.json"
-            config = LinuxServerConfig(public_host="185.23.35.241", psk_hex="13" * 32)
+            config = LinuxServerConfig(public_host="vpn.example", psk_hex="13" * 32)
             save_server_config(path, config)
             loaded = load_server_config(path)
-            self.assertEqual(loaded.public_host, "185.23.35.241")
+            self.assertEqual(loaded.public_host, "vpn.example")
             self.assertEqual(loaded.psk_hex, "13" * 32)
 
     def test_install_server_assets_writes_config_profile_and_service(self) -> None:
@@ -57,7 +57,7 @@ class LinuxServerAppTests(unittest.TestCase):
                 systemctl="/usr/bin/systemctl",
             )
             config = LinuxServerConfig(
-                public_host="185.23.35.241",
+                public_host="vpn.example",
                 public_interface="eth0",
                 psk_hex="14" * 32,
             )
@@ -70,13 +70,13 @@ class LinuxServerAppTests(unittest.TestCase):
             self.assertTrue(paths.service_path.exists())
             self.assertTrue(paths.launcher_path.exists())
             self.assertEqual(result["config_path"], str(paths.config_path))
-            self.assertIn("185.23.35.241", paths.client_profile_path.read_text(encoding="utf-8"))
+            self.assertIn("vpn.example", paths.client_profile_path.read_text(encoding="utf-8"))
 
     def test_write_client_profile_writes_requested_path(self) -> None:
         with tempfile.TemporaryDirectory() as tempdir:
             output = Path(tempdir) / "profiles" / "client.json"
             config = LinuxServerConfig(
-                public_host="185.23.35.241",
+                public_host="vpn.example",
                 public_interface="eth0",
                 psk_hex="15" * 32,
             )

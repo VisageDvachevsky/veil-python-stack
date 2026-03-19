@@ -119,7 +119,7 @@ python3 tests/live_linux_tun_smoke.py
 
 ```bash
 cd submodules/veil-python-stack
-sudo SERVER_HOST=185.23.35.241 TUN_NAME=veilfull0 bash examples/linux_vpn_full_tunnel_up.sh
+sudo SERVER_HOST=vpn.example TUN_NAME=veilfull0 bash examples/linux_vpn_full_tunnel_up.sh
 ```
 
 Скрипт:
@@ -191,7 +191,7 @@ GUI использует тот же config-файл и те же `up/down` де
 
 ```bash
 cd submodules/veil-python-stack
-sudo PUBLIC_HOST=185.23.35.241 PROFILE_OUT=/root/veil-client-profile.json \
+sudo PUBLIC_HOST=vpn.example PROFILE_OUT=/root/veil-client-profile.json \
   bash deploy/install_linux_server.sh
 ```
 
@@ -238,7 +238,7 @@ GUI-клиент тоже умеет импортировать такой то�
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/VisageDvachevsky/veil-core/main/deploy/bootstrap_install_linux_server.sh | \
-  sudo PUBLIC_HOST=185.23.35.241 bash
+  sudo PUBLIC_HOST=vpn.example bash
 ```
 
 Клиент:
@@ -270,7 +270,7 @@ PYTHON_BIN=python3 deploy/build_linux_artifact.sh
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/VisageDvachevsky/veil-core/main/deploy/bootstrap_install_linux_server.sh | \
-  sudo PUBLIC_HOST=185.23.35.241 ARTIFACT_PATH=/root/veil-linux-x86_64-cp312.tar.gz bash
+  sudo PUBLIC_HOST=vpn.example ARTIFACT_PATH=/root/veil-linux-x86_64-cp312.tar.gz bash
 ```
 
 ## Что это ещё не делает

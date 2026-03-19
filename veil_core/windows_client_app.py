@@ -16,7 +16,7 @@ from typing import Any
 from veil_core.windows_wintun import NetworkRouteSnapshot, WintunDll, WintunSession, resolve_ipv4
 
 
-DEFAULT_CLIENT_PSK = bytes.fromhex("87512f2d2d75b74c101a7e00a21c8ed0f463b00551f7088e2b028e8a7b2a542d")
+DEFAULT_CLIENT_PSK = bytes.fromhex("11" * 32)
 
 
 def _is_windows() -> bool:
@@ -143,7 +143,7 @@ def _is_process_admin() -> bool:
 
 @dataclass
 class WindowsClientConfig:
-    server_host: str = "185.23.35.241"
+    server_host: str = "vpn.example"
     server_port: int = 4433
     client_name: str = "veil-client"
     psk_hex: str = DEFAULT_CLIENT_PSK.hex()
@@ -206,9 +206,7 @@ def load_client_config(path: Path) -> WindowsClientConfig:
 
 def _looks_like_legacy_placeholder_config(config: WindowsClientConfig) -> bool:
     return (
-        config.server_host == "vpn.example"
-        or config.psk_hex == "12" * 32
-        or config.adapter_name == "LegacyTun"
+        config.adapter_name == "LegacyTun"
         or config.tun_address == "10.0.0.2/30"
         or config.tun_peer == "10.0.0.1"
     )

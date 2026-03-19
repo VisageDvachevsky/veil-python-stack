@@ -120,7 +120,7 @@ class LinuxClientEnvironment:
 
 @dataclass
 class LinuxClientConfig:
-    server_host: str = "185.23.35.241"
+    server_host: str = "vpn.example"
     server_port: int = 4433
     client_name: str = "veil-client"
     psk_hex: str = DEFAULT_CLIENT_PSK.hex()

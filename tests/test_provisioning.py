@@ -25,13 +25,13 @@ class ProvisioningTests(unittest.TestCase):
 
     def test_export_client_profile_roundtrip(self) -> None:
         profile = export_client_profile(
-            server_host="185.23.35.241",
+            server_host="vpn.example",
             server_port=4433,
             psk_hex="12" * 32,
             protocol_wrapper="websocket",
             persona_preset="browser_ws",
         )
-        self.assertEqual(profile.server_host, "185.23.35.241")
+        self.assertEqual(profile.server_host, "vpn.example")
         self.assertEqual(profile.protocol_wrapper, "websocket")
         self.assertEqual(profile_summary(profile)["psk_hex"], "12" * 32)
 

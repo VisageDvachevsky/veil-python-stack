@@ -1,8 +1,8 @@
 {
-  "server_host": "185.23.35.241",
+  "server_host": "vpn.example",
   "server_port": 4433,
   "client_name": "veil-client",
-  "psk_hex": "87512f2d2d75b74c101a7e00a21c8ed0f463b00551f7088e2b028e8a7b2a542d",
+  "psk_hex": "1111111111111111111111111111111111111111111111111111111111111111",
   "adapter_name": "VeilVPN",
   "tun_address": "10.200.0.2/30",
   "tun_peer": "10.200.0.1",

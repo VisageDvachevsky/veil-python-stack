@@ -81,7 +81,7 @@ class WindowsClientAppTests(unittest.TestCase):
             )
             loaded = load_client_config(paths.config_path)
             self.assertEqual(loaded.adapter_name, "VeilVPN")
-            self.assertEqual(loaded.server_host, "185.23.35.241")
+            self.assertEqual(loaded.server_host, "vpn.example")
 
     def test_runtime_commands_are_written(self) -> None:
         with tempfile.TemporaryDirectory() as tempdir:

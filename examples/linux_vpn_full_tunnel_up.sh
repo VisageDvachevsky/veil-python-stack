@@ -8,7 +8,7 @@ mkdir -p "$STATE_DIR"
 TUN_NAME="${TUN_NAME:-veilfull0}"
 CONFIG_PATH="${CONFIG_PATH:-$STATE_DIR/${TUN_NAME}.client.json}"
 
-SERVER_HOST="${SERVER_HOST:-185.23.35.241}"
+SERVER_HOST="${SERVER_HOST:-vpn.example}"
 SERVER_PORT="${SERVER_PORT:-4433}"
 CLIENT_NAME="${CLIENT_NAME:-client}"
 PSK_HEX="${PSK_HEX:-abababababababababababababababababababababababababababababababab}"
