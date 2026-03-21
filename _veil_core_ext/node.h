@@ -134,6 +134,8 @@ public:
    */
   bool disconnect(std::uint64_t session_id);
 
+  int socket_fd() const { return socket_.fd(); }
+
   /**
    * Collect current pipeline statistics across all active sessions.
    * Returns a map of stat-name -> aggregate count.
