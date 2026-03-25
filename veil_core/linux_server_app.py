@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import ipaddress
 import json
 import os
 import shlex
@@ -10,7 +11,12 @@ from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Any
 
-from veil_core.provisioning import ClientConnectionProfile, export_client_profile, generate_psk_hex
+from veil_core.provisioning import (
+    ClientConnectionProfile,
+    export_client_profile,
+    generate_psk_hex,
+    profile_summary,
+)
 
 
 @dataclass(frozen=True)
@@ -85,20 +91,46 @@ class LinuxServerConfig:
     server_name: str = "veil-server"
     psk_hex: str = ""
     tun_name: str = "veil0"
-    tun_address: str = "10.200.0.1/30"
-    tun_peer: str = "10.200.0.2"
+    tun_address: str = "10.200.0.1/24"
+    tun_peer: str = ""
     packet_mtu: int = 1300
     keepalive_interval: float = 10.0
     keepalive_timeout: float = 30.0
     protocol_wrapper: str = "none"
     persona_preset: str = "custom"
+    enable_http_handshake_emulation: bool = False
+    rotation_interval_seconds: int = 30
+    handshake_timeout_ms: int = 5000
+    session_idle_timeout_ms: int = 0
+    transport_mtu: int = 1400
 
     def ensure_defaults(self) -> "LinuxServerConfig":
         if not self.psk_hex:
             self.psk_hex = generate_psk_hex()
         if not self.public_interface:
             self.public_interface = autodetect_public_interface()
+        if (
+            self.protocol_wrapper == "websocket"
+            and self.persona_preset == "browser_ws"
+            and not self.enable_http_handshake_emulation
+        ):
+            self.persona_preset = "custom"
         return self
+
+    @property
+    def tunnel_interface(self) -> ipaddress.IPv4Interface:
+        interface = ipaddress.ip_interface(self.tun_address)
+        if interface.version != 4:
+            raise ValueError("Linux VPN server currently supports IPv4 tunnel addressing only")
+        return interface
+
+    @property
+    def tunnel_server_ip(self) -> str:
+        return str(self.tunnel_interface.ip)
+
+    @property
+    def tunnel_network_cidr(self) -> str:
+        return str(self.tunnel_interface.network)
 
     def to_json(self) -> str:
         return json.dumps(asdict(self), ensure_ascii=False, indent=2, sort_keys=True) + "\n"
@@ -110,14 +142,20 @@ class LinuxServerConfig:
             server_host=self.public_host,
             server_port=self.bind_port,
             psk_hex=self.psk_hex,
+            tunnel_mode="dynamic",
             tun_name="veilfull0",
-            tun_address=self.tun_peer + "/30" if "/" not in self.tun_peer else self.tun_peer,
-            tun_peer=self.tun_address.split("/", 1)[0],
+            tun_address="",
+            tun_peer="",
             packet_mtu=self.packet_mtu,
             keepalive_interval=self.keepalive_interval,
             keepalive_timeout=self.keepalive_timeout,
             protocol_wrapper=self.protocol_wrapper,
             persona_preset=self.persona_preset,
+            enable_http_handshake_emulation=self.enable_http_handshake_emulation,
+            rotation_interval_seconds=self.rotation_interval_seconds,
+            handshake_timeout_ms=self.handshake_timeout_ms,
+            session_idle_timeout_ms=self.session_idle_timeout_ms,
+            transport_mtu=self.transport_mtu,
         )
 
 
@@ -197,4 +235,50 @@ def install_server_assets(
         "client_profile_path": str(paths.client_profile_path),
         "launcher_path": str(paths.launcher_path),
         "service_path": str(paths.service_path),
+    }
+
+
+def read_server_status(paths: LinuxServerPaths, config: LinuxServerConfig) -> dict[str, Any]:
+    service_name = paths.service_path.name
+    systemctl = shutil.which("systemctl")
+    service_active = False
+    service_enabled = False
+    if systemctl:
+        active = subprocess.run([systemctl, "is-active", service_name], check=False, capture_output=True, text=True)
+        enabled = subprocess.run([systemctl, "is-enabled", service_name], check=False, capture_output=True, text=True)
+        service_active = active.returncode == 0 and active.stdout.strip() == "active"
+        service_enabled = enabled.returncode == 0 and enabled.stdout.strip() in {"enabled", "static", "generated", "alias"}
+
+    profile_payload: dict[str, Any] | None = None
+    if config.public_host:
+        profile_payload = profile_summary(config.export_client_profile())
+
+    return {
+        "installed": paths.config_path.exists() and paths.launcher_path.exists() and paths.service_path.exists(),
+        "service_active": service_active,
+        "service_enabled": service_enabled,
+        "public_host": config.public_host,
+        "bind_host": config.bind_host,
+        "bind_port": config.bind_port,
+        "public_interface": config.public_interface,
+        "server_name": config.server_name,
+        "tun_name": config.tun_name,
+        "tun_address": config.tun_address,
+        "tun_peer": config.tun_peer,
+        "packet_mtu": config.packet_mtu,
+        "keepalive_interval": config.keepalive_interval,
+        "keepalive_timeout": config.keepalive_timeout,
+        "protocol_wrapper": config.protocol_wrapper,
+        "persona_preset": config.persona_preset,
+        "enable_http_handshake_emulation": config.enable_http_handshake_emulation,
+        "rotation_interval_seconds": config.rotation_interval_seconds,
+        "handshake_timeout_ms": config.handshake_timeout_ms,
+        "session_idle_timeout_ms": config.session_idle_timeout_ms,
+        "transport_mtu": config.transport_mtu,
+        "config_path": str(paths.config_path),
+        "client_profile_path": str(paths.client_profile_path),
+        "client_profile_exists": paths.client_profile_path.exists(),
+        "launcher_path": str(paths.launcher_path),
+        "service_path": str(paths.service_path),
+        "client_profile_summary": profile_payload,
     }

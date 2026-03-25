@@ -510,8 +510,6 @@ void VeilNode::dispatch_packet(const transport::UdpPacket &packet) {
   bool is_new_session = false;
   bool should_submit_to_pipeline = false;
   std::uint64_t session_id = 0;
-  std::string new_host;
-  std::uint16_t new_port = 0;
   std::optional<std::vector<std::uint8_t>> handshake_response;
   std::optional<std::string> handshake_error;
 
@@ -537,8 +535,6 @@ void VeilNode::dispatch_packet(const transport::UdpPacket &packet) {
       session_id = peer->session_id;
       is_new_session = true;
       should_submit_to_pipeline = false;
-      new_host = packet.remote.host;
-      new_port = packet.remote.port;
     }
   } else if (!peer && config_.is_client) {
     std::optional<handshake::HandshakeSession> handshake_session;
@@ -567,8 +563,6 @@ void VeilNode::dispatch_packet(const transport::UdpPacket &packet) {
       session_id = peer->session_id;
       is_new_session = true;
       should_submit_to_pipeline = false;
-      new_host = packet.remote.host;
-      new_port = packet.remote.port;
     }
   }
 
@@ -583,16 +577,14 @@ void VeilNode::dispatch_packet(const transport::UdpPacket &packet) {
     emit_error(0, *handshake_error);
   }
 
-  // Fire callback OUTSIDE the lock to prevent deadlock (Python code
-  // may call back into send() which also takes sessions_mutex_).
-  if (is_new_session && callbacks_.on_new_connection) {
-    callbacks_.on_new_connection(peer->session_id, new_host, new_port);
-  }
-
   if (!peer) {
     LOG_DEBUG("[VeilNode] Dropping packet from unknown peer {}:{}",
               packet.remote.host, packet.remote.port);
     return;
+  }
+
+  if (is_new_session) {
+    maybe_drive_http_prelude(peer);
   }
 
   if (should_submit_to_pipeline) {
@@ -607,6 +599,7 @@ VeilNode::create_session(const handshake::HandshakeSession &handshake_session,
   transport::TransportSessionConfig cfg;
   cfg.mtu = config_.mtu;
   cfg.protocol_wrapper = parse_wrapper(config_.protocol_wrapper);
+  cfg.protocol_wrapper_client_to_server = config_.is_client;
   cfg.enable_http_handshake_emulation = config_.enable_http_handshake_emulation;
   cfg.session_rotation_interval =
       std::chrono::seconds(config_.rotation_interval_seconds);
@@ -616,32 +609,39 @@ VeilNode::create_session(const handshake::HandshakeSession &handshake_session,
     cfg.obfuscation_profile.persona_preset = preset;
   }
 
-  auto session =
-      std::make_unique<transport::TransportSession>(handshake_session, cfg);
-
-  transport::PipelineConfig pcfg;
-  auto pipeline =
-      std::make_unique<transport::PipelineProcessor>(session.get(), pcfg);
-
   const std::uint64_t sid = handshake_session.session_id;
-  pipeline->set_socket(&socket_);
-  pipeline->start(
-      /*on_rx=*/[this, sid](std::uint64_t /*id*/,
-                            const std::vector<mux::MuxFrame> &frames,
-                            const transport::UdpEndpoint
-                                &src) { emit_data(sid, frames, src); },
+  auto peer = std::make_shared<PeerSession>();
+  peer->session =
+      std::make_unique<transport::TransportSession>(handshake_session, cfg);
+  transport::PipelineConfig pcfg;
+  peer->pipeline =
+      std::make_unique<transport::PipelineProcessor>(peer->session.get(), pcfg);
+  peer->endpoint = endpoint;
+  peer->session_id = sid;
+  peer->last_activity_ms.store(steady_clock_millis());
+  const auto weak_peer = std::weak_ptr<PeerSession>(peer);
+
+  peer->pipeline->set_socket(&socket_);
+  peer->pipeline->start(
+      /*on_rx=*/
+      [this, weak_peer](std::uint64_t /*id*/,
+                        const std::vector<mux::MuxFrame> &frames,
+                        const transport::UdpEndpoint &src) {
+        auto peer_ref = weak_peer.lock();
+        if (!peer_ref) {
+          return;
+        }
+        if (frames.empty()) {
+          maybe_drive_http_prelude(peer_ref);
+          return;
+        }
+        emit_data(peer_ref->session_id, frames, src);
+      },
       /*on_tx_complete=*/nullptr,
       /*on_error=*/
       [this, sid](std::uint64_t /*id*/, const std::string &msg) {
         emit_error(sid, msg);
       });
-
-  auto peer = std::make_shared<PeerSession>();
-  peer->session = std::move(session);
-  peer->pipeline = std::move(pipeline);
-  peer->endpoint = endpoint;
-  peer->session_id = sid;
-  peer->last_activity_ms.store(steady_clock_millis());
 
   auto [it, _] = sessions_.emplace(sid, peer);
   endpoint_sessions_[make_endpoint_key(endpoint)] = sid;
@@ -735,6 +735,85 @@ bool VeilNode::send_control_frame_sync(const std::shared_ptr<PeerSession> &peer,
 
   std::error_code ec;
   return socket_.send(*encrypted, peer->endpoint, ec);
+}
+
+void VeilNode::maybe_drive_http_prelude(const std::shared_ptr<PeerSession> &peer) {
+  if (!peer || !peer->pipeline) {
+    return;
+  }
+
+  std::optional<std::vector<std::uint8_t>> outbound_prelude;
+  bool should_mark_ready = false;
+  bool prelude_send_expected = false;
+
+  peer->pipeline->execute_on_session(
+      [&](transport::TransportSession &session) {
+        if (!session.prelude_enabled()) {
+          should_mark_ready = true;
+          return;
+        }
+
+        if (config_.is_client) {
+          if (session.persona_stage() ==
+              transport::TransportSession::PersonaStage::prelude_pending) {
+            prelude_send_expected = true;
+            outbound_prelude = session.emit_websocket_http_prelude();
+            return;
+          }
+          if (session.persona_stage() ==
+              transport::TransportSession::PersonaStage::data_phase) {
+            should_mark_ready = true;
+          }
+          return;
+        }
+
+        if (session.persona_stage() ==
+            transport::TransportSession::PersonaStage::prelude_in_progress) {
+          prelude_send_expected = true;
+          outbound_prelude = session.emit_websocket_http_prelude();
+          should_mark_ready =
+              outbound_prelude.has_value() &&
+              session.persona_stage() ==
+                  transport::TransportSession::PersonaStage::data_phase;
+          return;
+        }
+        if (session.persona_stage() ==
+            transport::TransportSession::PersonaStage::data_phase) {
+          should_mark_ready = true;
+        }
+      });
+
+  if (prelude_send_expected && !outbound_prelude.has_value()) {
+    emit_error(peer->session_id, "Failed to emit HTTP WebSocket prelude");
+    return;
+  }
+
+  if (outbound_prelude.has_value()) {
+    std::error_code ec;
+    if (!socket_.send(*outbound_prelude, peer->endpoint, ec)) {
+      emit_error(peer->session_id,
+                 "HTTP WebSocket prelude send failed: " + ec.message());
+      return;
+    }
+    mark_session_activity(peer);
+  }
+
+  if (should_mark_ready) {
+    maybe_emit_ready(peer);
+  }
+}
+
+void VeilNode::maybe_emit_ready(const std::shared_ptr<PeerSession> &peer) {
+  if (!peer) {
+    return;
+  }
+  if (peer->ready_notified.exchange(true)) {
+    return;
+  }
+  if (callbacks_.on_new_connection) {
+    callbacks_.on_new_connection(peer->session_id, peer->endpoint.host,
+                                 peer->endpoint.port);
+  }
 }
 
 void VeilNode::mark_session_activity(const std::shared_ptr<PeerSession> &peer) {

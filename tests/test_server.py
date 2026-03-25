@@ -159,8 +159,9 @@ class ServerWrapperTests(unittest.IsolatedAsyncioTestCase):
         server = server_mod.Server(4433)
         server.start()
         session = server_mod.Session(server, session_id=303, remote_host="127.0.0.1", remote_port=5000)
-        await server._queue.put(DataEvent(session_id=404, stream_id=2, data=b"other"))
-        await server._queue.put(DataEvent(session_id=303, stream_id=7, data=b"target"))
+        server._on_data(404, 2, b"other")
+        server._on_data(303, 7, b"target")
+        await asyncio.sleep(0)
 
         matched = await session.recv(timeout=0.1, stream_id=7)
 
@@ -185,9 +186,8 @@ class ServerWrapperTests(unittest.IsolatedAsyncioTestCase):
         server = server_mod.Server(4433)
         server.start()
         session = server_mod.Session(server, session_id=808, remote_host="127.0.0.1", remote_port=6000)
-        await server._queue.put(
-            DataEvent(session_id=808, stream_id=1, data=b'{"kind":"hello","n":7}')
-        )
+        server._on_data(808, 1, b'{"kind":"hello","n":7}')
+        await asyncio.sleep(0)
 
         message = await session.recv_json(timeout=0.1)
 
@@ -200,8 +200,9 @@ class ServerWrapperTests(unittest.IsolatedAsyncioTestCase):
         server = server_mod.Server(4433)
         server.start()
         session = server_mod.Session(server, session_id=515, remote_host="127.0.0.1", remote_port=6000)
-        await server._queue.put(DisconnectedEvent(session_id=999, reason="other"))
-        await server._queue.put(DisconnectedEvent(session_id=515, reason="target"))
+        server._on_disconnected(999, "other")
+        server._on_disconnected(515, "target")
+        await asyncio.sleep(0)
 
         event = await session.recv_event(timeout=0.1, predicate=lambda item: isinstance(item, DisconnectedEvent))
 
@@ -210,6 +211,43 @@ class ServerWrapperTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(event.reason, "target")
         preserved = await server.next_event(timeout=0.1)
         self.assertEqual(preserved.session_id, 999)
+        server.stop()
+
+    async def test_accept_waiter_does_not_steal_session_events(self) -> None:
+        server = server_mod.Server(4433)
+        server.start()
+        session = server_mod.Session(server, session_id=303, remote_host="127.0.0.1", remote_port=5000)
+
+        accept_task = asyncio.create_task(server.accept(timeout=5.0))
+        await asyncio.sleep(0)
+        server._on_data(303, 7, b"target")
+        await asyncio.sleep(0)
+
+        matched = await session.recv(timeout=0.1, stream_id=7)
+
+        self.assertEqual(matched.session_id, 303)
+        self.assertEqual(matched.data, b"target")
+        accept_task.cancel()
+        await asyncio.gather(accept_task, return_exceptions=True)
+        server.stop()
+
+    async def test_session_waiters_do_not_steal_other_session_events(self) -> None:
+        server = server_mod.Server(4433)
+        server.start()
+        session_a = server_mod.Session(server, session_id=101, remote_host="127.0.0.1", remote_port=5000)
+        session_b = server_mod.Session(server, session_id=202, remote_host="127.0.0.1", remote_port=5001)
+
+        waiter_a = asyncio.create_task(session_a.recv(timeout=5.0, stream_id=7))
+        await asyncio.sleep(0)
+        server._on_data(202, 7, b"for-b")
+        await asyncio.sleep(0)
+
+        matched_b = await session_b.recv(timeout=0.1, stream_id=7)
+
+        self.assertEqual(matched_b.session_id, 202)
+        self.assertEqual(matched_b.data, b"for-b")
+        waiter_a.cancel()
+        await asyncio.gather(waiter_a, return_exceptions=True)
         server.stop()
 
 

@@ -30,6 +30,7 @@ class LinuxClientPaths:
     ctl_script_path: Path
     gui_script_path: Path
     runtime_dir: Path
+    gui_lock_path: Path
 
     @classmethod
     def detect(cls, *, repo_root: Path | None = None) -> "LinuxClientPaths":
@@ -53,6 +54,7 @@ class LinuxClientPaths:
             ctl_script_path=root / "desktop" / "veil_vpn_ctl.py",
             gui_script_path=root / "desktop" / "veil_vpn_client.py",
             runtime_dir=Path("/run/veil-vpn"),
+            gui_lock_path=data_dir / "runtime" / "gui.lock",
         )
 
 
@@ -124,6 +126,7 @@ class LinuxClientConfig:
     server_port: int = 4433
     client_name: str = "veil-client"
     psk_hex: str = DEFAULT_CLIENT_PSK.hex()
+    tunnel_mode: str = "static"
     tun_name: str = "veilfull0"
     tun_address: str = "10.200.0.2/30"
     tun_peer: str = "10.200.0.1"
@@ -134,6 +137,11 @@ class LinuxClientConfig:
     auto_connect: bool = False
     protocol_wrapper: str = "none"
     persona_preset: str = "custom"
+    enable_http_handshake_emulation: bool = False
+    rotation_interval_seconds: int = 30
+    handshake_timeout_ms: int = 5000
+    session_idle_timeout_ms: int = 0
+    transport_mtu: int = 1400
     suspend_conflicting_services: bool = False
 
     @property
@@ -149,6 +157,7 @@ class LinuxClientConfig:
             "SERVER_PORT": str(self.server_port),
             "CLIENT_NAME": self.client_name,
             "PSK_HEX": self.psk_hex,
+            "TUNNEL_MODE": self.tunnel_mode,
             "TUN_NAME": self.tun_name,
             "TUN_ADDR": self.tun_address,
             "TUN_PEER": self.tun_peer,
@@ -157,7 +166,21 @@ class LinuxClientConfig:
             "KEEPALIVE_TIMEOUT": str(self.keepalive_timeout),
             "PROTOCOL_WRAPPER": self.protocol_wrapper,
             "PERSONA_PRESET": self.persona_preset,
+            "ENABLE_HTTP_HANDSHAKE_EMULATION": "1" if self.enable_http_handshake_emulation else "0",
+            "ROTATION_INTERVAL_SECONDS": str(self.rotation_interval_seconds),
+            "HANDSHAKE_TIMEOUT_MS": str(self.handshake_timeout_ms),
+            "SESSION_IDLE_TIMEOUT_MS": str(self.session_idle_timeout_ms),
+            "TRANSPORT_MTU": str(self.transport_mtu),
         }
+
+    def ensure_compatible(self) -> "LinuxClientConfig":
+        if (
+            self.protocol_wrapper == "websocket"
+            and self.persona_preset == "browser_ws"
+            and not self.enable_http_handshake_emulation
+        ):
+            self.persona_preset = "custom"
+        return self
 
 
 @dataclass(frozen=True)
@@ -177,12 +200,13 @@ def runtime_files(paths: LinuxClientPaths, config: LinuxClientConfig) -> LinuxCl
 
 def load_client_config(path: Path) -> LinuxClientConfig:
     if not path.exists():
-        return LinuxClientConfig()
+        return LinuxClientConfig().ensure_compatible()
     raw = json.loads(path.read_text(encoding="utf-8"))
-    return LinuxClientConfig(**raw)
+    return LinuxClientConfig(**raw).ensure_compatible()
 
 
 def save_client_config(path: Path, config: LinuxClientConfig) -> None:
+    config.ensure_compatible()
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(config.to_json(), encoding="utf-8")
 
@@ -221,7 +245,7 @@ def render_desktop_entry(paths: LinuxClientPaths) -> str:
 
 
 def install_user_client(paths: LinuxClientPaths, env: LinuxClientEnvironment) -> dict[str, str]:
-    for directory in (paths.config_dir, paths.data_dir, paths.bin_dir, paths.desktop_entry_dir):
+    for directory in (paths.config_dir, paths.data_dir, paths.bin_dir, paths.desktop_entry_dir, paths.gui_lock_path.parent):
         directory.mkdir(parents=True, exist_ok=True)
 
     if not paths.config_path.exists():
@@ -294,6 +318,28 @@ def _route_info_for_host(host: str) -> dict[str, str]:
     return result
 
 
+def _resolve_underlay_route(
+    host: str,
+    *,
+    excluded_interfaces: set[str] | None = None,
+    timeout_seconds: float = 5.0,
+) -> dict[str, str]:
+    excluded = {name for name in (excluded_interfaces or set()) if name}
+    deadline = time.monotonic() + timeout_seconds
+    last_route: dict[str, str] | None = None
+    while True:
+        route = _route_info_for_host(host)
+        last_route = route
+        if route.get("dev") not in excluded:
+            return route
+        if time.monotonic() >= deadline:
+            break
+        time.sleep(0.2)
+    blocked = ", ".join(sorted(excluded)) if excluded else "excluded interface"
+    route_desc = last_route or {"host": host}
+    raise RuntimeError(f"Underlay route for {host} is still pinned to {blocked}: {route_desc}")
+
+
 def _systemctl_available() -> bool:
     return shutil.which("systemctl") is not None
 
@@ -324,6 +370,10 @@ def _start_service(service_name: str) -> None:
 
 def _interface_exists(name: str) -> bool:
     return _run_ip("link", "show", "dev", name, check=False).returncode == 0
+
+
+def _delete_interface(name: str) -> None:
+    _run_ip("link", "delete", "dev", name, check=False)
 
 
 def _set_nm_managed(name: str, managed: bool) -> None:
@@ -367,6 +417,9 @@ def _suspend_conflicting_services() -> list[dict[str, Any]]:
     for conflict in _detect_conflicting_services():
         if conflict["was_active"]:
             _stop_service(conflict["service"])
+        if conflict.get("interface_present") and conflict.get("interface"):
+            _delete_interface(str(conflict["interface"]))
+        if conflict["was_active"] or conflict.get("interface_present"):
             suspended.append(conflict)
     return suspended
 
@@ -411,17 +464,22 @@ def start_runtime(paths: LinuxClientPaths, config: LinuxClientConfig) -> dict[st
         except ProcessLookupError:
             files.pid_file.unlink(missing_ok=True)
 
-    underlay = _route_info_for_host(config.server_host)
-    if "via" in underlay:
-        _run_ip("route", "replace", f"{config.server_host}/32", "via", underlay["via"], "dev", underlay["dev"])
-    else:
-        _run_ip("route", "replace", f"{config.server_host}/32", "dev", underlay["dev"])
-
     if conflicts and not config.suspend_conflicting_services:
         raise RuntimeError(_format_conflict_message(conflicts))
 
     if config.suspend_conflicting_services:
         suspended_conflicts = _suspend_conflicting_services()
+
+    excluded_interfaces = {
+        str(conflict.get("interface") or "").strip()
+        for conflict in [*conflicts, *suspended_conflicts]
+        if str(conflict.get("interface") or "").strip()
+    }
+    underlay = _resolve_underlay_route(config.server_host, excluded_interfaces=excluded_interfaces)
+    if "via" in underlay:
+        _run_ip("route", "replace", f"{config.server_host}/32", "via", underlay["via"], "dev", underlay["dev"])
+    else:
+        _run_ip("route", "replace", f"{config.server_host}/32", "dev", underlay["dev"])
 
     command = [
         env_python := (shutil.which("python3") or sys.executable),
@@ -434,10 +492,6 @@ def start_runtime(paths: LinuxClientPaths, config: LinuxClientConfig) -> dict[st
         str(config.server_port),
         "--tun-name",
         config.tun_name,
-        "--tun-address",
-        config.tun_address,
-        "--tun-peer",
-        config.tun_peer,
         "--packet-mtu",
         str(config.packet_mtu),
         "--name",
@@ -452,7 +506,19 @@ def start_runtime(paths: LinuxClientPaths, config: LinuxClientConfig) -> dict[st
         config.protocol_wrapper,
         "--persona-preset",
         config.persona_preset,
+        "--rotation-interval-seconds",
+        str(config.rotation_interval_seconds),
+        "--handshake-timeout-ms",
+        str(config.handshake_timeout_ms),
+        "--session-idle-timeout-ms",
+        str(config.session_idle_timeout_ms),
+        "--transport-mtu",
+        str(config.transport_mtu),
     ]
+    if config.enable_http_handshake_emulation:
+        command.append("--enable-http-handshake-emulation")
+    if config.tunnel_mode == "static":
+        command.extend(["--tun-address", config.tun_address, "--tun-peer", config.tun_peer])
     if config.reconnect:
         command.append("--reconnect")
 
@@ -539,15 +605,16 @@ def stop_runtime(paths: LinuxClientPaths, config: LinuxClientConfig) -> dict[str
 
 def read_runtime_status(paths: LinuxClientPaths, config: LinuxClientConfig) -> dict[str, Any]:
     files = runtime_files(paths, config)
+    state = _read_runtime_state(files.state_file)
     pid: int | None = None
-    running = False
+    process_alive = False
     if files.pid_file.exists():
         try:
             pid = int(files.pid_file.read_text(encoding="utf-8").strip())
             os.kill(pid, 0)
-            running = True
+            process_alive = True
         except Exception:
-            running = False
+            process_alive = False
 
     tun_exists = subprocess.run(
         ["ip", "link", "show", "dev", config.tun_name],
@@ -555,19 +622,34 @@ def read_runtime_status(paths: LinuxClientPaths, config: LinuxClientConfig) -> d
         capture_output=True,
         text=True,
     ).returncode == 0
+    running = process_alive or (tun_exists and bool(state))
 
     return {
         "installed": paths.config_path.exists() and paths.ctl_wrapper_path.exists(),
         "running": running,
+        "process_alive": process_alive,
         "tun_exists": tun_exists,
         "pid": pid,
         "server_host": config.server_host,
         "server_port": config.server_port,
         "tun_name": config.tun_name,
         "client_name": config.client_name,
+        "tunnel_mode": config.tunnel_mode,
+        "packet_mtu": config.packet_mtu,
+        "keepalive_interval": config.keepalive_interval,
+        "keepalive_timeout": config.keepalive_timeout,
+        "reconnect": config.reconnect,
+        "auto_connect": config.auto_connect,
         "protocol_wrapper": config.protocol_wrapper,
         "persona_preset": config.persona_preset,
+        "enable_http_handshake_emulation": config.enable_http_handshake_emulation,
+        "rotation_interval_seconds": config.rotation_interval_seconds,
+        "handshake_timeout_ms": config.handshake_timeout_ms,
+        "session_idle_timeout_ms": config.session_idle_timeout_ms,
+        "transport_mtu": config.transport_mtu,
         "suspend_conflicting_services": config.suspend_conflicting_services,
+        "underlay_route": state.get("underlay_route", {}),
+        "suspended_conflicts": state.get("suspended_conflicts", []),
         "config_path": str(paths.config_path),
         "log_path": str(files.log_file),
         "ctl_wrapper_path": str(paths.ctl_wrapper_path),

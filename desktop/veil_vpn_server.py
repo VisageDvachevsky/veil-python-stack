@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import ipaddress
 import subprocess
 import sys
 from pathlib import Path
@@ -20,6 +21,7 @@ def _iptables(*args: str) -> None:
 
 
 def ensure_server_forwarding(config) -> None:
+    tunnel_network = str(ipaddress.ip_interface(config.tun_address).network)
     subprocess.run(["sysctl", "-w", "net.ipv4.ip_forward=1"], check=True, capture_output=True)
     _iptables(
         "-t",
@@ -27,7 +29,7 @@ def ensure_server_forwarding(config) -> None:
         "-C",
         "POSTROUTING",
         "-s",
-        "10.200.0.0/30",
+        tunnel_network,
         "-o",
         config.public_interface,
         "-j",
@@ -42,10 +44,11 @@ def ensure_rule(command: list[str], add_command: list[str]) -> None:
 
 
 def configure_network(config) -> None:
+    tunnel_network = str(ipaddress.ip_interface(config.tun_address).network)
     subprocess.run(["sysctl", "-w", "net.ipv4.ip_forward=1"], check=True, capture_output=True)
     ensure_rule(
-        ["iptables", "-t", "nat", "-C", "POSTROUTING", "-s", "10.200.0.0/30", "-o", config.public_interface, "-j", "MASQUERADE"],
-        ["iptables", "-t", "nat", "-A", "POSTROUTING", "-s", "10.200.0.0/30", "-o", config.public_interface, "-j", "MASQUERADE"],
+        ["iptables", "-t", "nat", "-C", "POSTROUTING", "-s", tunnel_network, "-o", config.public_interface, "-j", "MASQUERADE"],
+        ["iptables", "-t", "nat", "-A", "POSTROUTING", "-s", tunnel_network, "-o", config.public_interface, "-j", "MASQUERADE"],
     )
     ensure_rule(
         ["iptables", "-C", "FORWARD", "-i", config.tun_name, "-o", config.public_interface, "-j", "ACCEPT"],
@@ -71,7 +74,6 @@ async def main() -> None:
         tun_config=LinuxTunConfig(
             name=config.tun_name,
             address_cidr=config.tun_address,
-            peer_address=config.tun_peer,
             mtu=config.packet_mtu,
         ),
         local_name=config.server_name,
@@ -81,6 +83,11 @@ async def main() -> None:
         psk=bytes.fromhex(config.psk_hex),
         protocol_wrapper=config.protocol_wrapper,
         persona_preset=config.persona_preset,
+        enable_http_handshake_emulation=config.enable_http_handshake_emulation,
+        rotation_interval_seconds=config.rotation_interval_seconds,
+        handshake_timeout_ms=config.handshake_timeout_ms,
+        session_idle_timeout_ms=config.session_idle_timeout_ms,
+        mtu=config.transport_mtu,
     )
     await server.serve_forever()
 

@@ -19,7 +19,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--host", default="127.0.0.1")
     parser.add_argument("--port", type=int, default=4433)
     parser.add_argument("--tun-name", default="veil0")
-    parser.add_argument("--tun-address", required=True, help="CIDR for local TUN address, e.g. 10.200.0.1/30")
+    parser.add_argument("--tun-address", help="CIDR for local TUN address, e.g. 10.200.0.1/24")
     parser.add_argument("--tun-peer", default=None, help="Optional peer address for point-to-point setup")
     parser.add_argument(
         "--route",
@@ -37,6 +37,11 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--psk-hex", default="ab" * 32)
     parser.add_argument("--protocol-wrapper", default="none")
     parser.add_argument("--persona-preset", default="custom")
+    parser.add_argument("--enable-http-handshake-emulation", action="store_true")
+    parser.add_argument("--rotation-interval-seconds", type=int, default=30)
+    parser.add_argument("--handshake-timeout-ms", type=int, default=5000)
+    parser.add_argument("--session-idle-timeout-ms", type=int, default=0)
+    parser.add_argument("--transport-mtu", type=int, default=1400)
     return parser.parse_args()
 
 
@@ -63,6 +68,11 @@ async def main() -> None:
             psk=psk,
             protocol_wrapper=args.protocol_wrapper,
             persona_preset=args.persona_preset,
+            enable_http_handshake_emulation=args.enable_http_handshake_emulation,
+            rotation_interval_seconds=args.rotation_interval_seconds,
+            handshake_timeout_ms=args.handshake_timeout_ms,
+            session_idle_timeout_ms=args.session_idle_timeout_ms,
+            mtu=args.transport_mtu,
         )
         await proxy.serve_forever()
         return
@@ -80,6 +90,11 @@ async def main() -> None:
         psk=psk,
         protocol_wrapper=args.protocol_wrapper,
         persona_preset=args.persona_preset,
+        enable_http_handshake_emulation=args.enable_http_handshake_emulation,
+        rotation_interval_seconds=args.rotation_interval_seconds,
+        handshake_timeout_ms=args.handshake_timeout_ms,
+        session_idle_timeout_ms=args.session_idle_timeout_ms,
+        mtu=args.transport_mtu,
     )
     if args.reconnect:
         await proxy.run_forever()

@@ -1,8 +1,10 @@
 from __future__ import annotations
 
+import asyncio
 from collections.abc import Callable
 from dataclasses import dataclass
 
+from veil_core._event_buffer import EventBuffer
 from veil_core.events import DataEvent, Event
 from veil_core.message import Message, encode_json_message, message_from_event
 
@@ -38,6 +40,7 @@ class Session:
             remote_port=remote_port,
         )
         self._default_stream_id = default_stream_id
+        self._event_buffer = EventBuffer()
 
     @property
     def session_id(self) -> int:
@@ -76,6 +79,14 @@ class Session:
         timeout: float | None = None,
         stream_id: int | None = None,
     ) -> DataEvent:
+        queue = self._session_queue()
+        if queue is not None:
+            return await self._event_buffer.recv_data(
+                queue,
+                timeout=timeout,
+                session_id=self._info.session_id,
+                stream_id=stream_id,
+            )
         owner = self._owner
         if not hasattr(owner, "recv"):
             raise RuntimeError("Session owner does not support recv()")
@@ -91,6 +102,21 @@ class Session:
         timeout: float | None = None,
         predicate: Callable[[Event], bool] | None = None,
     ) -> Event:
+        queue = self._session_queue()
+        if queue is not None:
+            def queue_matcher(event: Event) -> bool:
+                if event.session_id != self._info.session_id:
+                    return False
+                if predicate is not None and not predicate(event):
+                    return False
+                return True
+
+            return await self._event_buffer.recv_event(
+                queue,
+                timeout=timeout,
+                predicate=queue_matcher,
+            )
+
         owner = self._owner
         if not hasattr(owner, "recv_event"):
             raise RuntimeError("Session owner does not support recv_event()")
@@ -121,6 +147,12 @@ class Session:
         if not hasattr(owner, "disconnect"):
             raise RuntimeError("Session owner does not support disconnect()")
         return owner.disconnect(self._info.session_id)
+
+    def _session_queue(self) -> asyncio.Queue[Event] | None:
+        owner = self._owner
+        if not hasattr(owner, "session_queue"):
+            return None
+        return owner.session_queue(self._info.session_id)
 
     def __repr__(self) -> str:
         peer = ""

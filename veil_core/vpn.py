@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import asyncio
 from dataclasses import dataclass
-from typing import Any
+from typing import Any, Callable
 
 from veil_core.client import Client
 from veil_core.events import DataEvent, DisconnectedEvent, ErrorEvent, Event
@@ -17,6 +17,7 @@ DEFAULT_PACKET_STREAM_ID = 2
 DEFAULT_VPN_PACKET_MTU = 1300
 DEFAULT_KEEPALIVE_INTERVAL = 10.0
 DEFAULT_KEEPALIVE_TIMEOUT = 30.0
+DEFAULT_HANDSHAKE_RETRY_INTERVAL = 0.5
 
 
 @dataclass(frozen=True)
@@ -44,6 +45,8 @@ class VpnConnection:
         keepalive_timeout: float = DEFAULT_KEEPALIVE_TIMEOUT,
         control_stream_id: int = DEFAULT_CONTROL_STREAM_ID,
         packet_stream_id: int = DEFAULT_PACKET_STREAM_ID,
+        hello_payload: dict[str, Any] | None = None,
+        ready_payload: dict[str, Any] | None = None,
     ) -> None:
         if control_stream_id == packet_stream_id:
             raise ValueError("control_stream_id and packet_stream_id must differ")
@@ -59,6 +62,8 @@ class VpnConnection:
         self._keepalive_timeout = keepalive_timeout
         self._control_stream_id = control_stream_id
         self._packet_stream_id = packet_stream_id
+        self._hello_payload = dict(hello_payload or {})
+        self._ready_payload = dict(ready_payload or {})
         self._packet_queue: asyncio.Queue[VpnPacket] = asyncio.Queue()
         self._control_queue: asyncio.Queue[dict[str, Any]] = asyncio.Queue()
         self._closed = asyncio.get_running_loop().create_future()
@@ -68,7 +73,10 @@ class VpnConnection:
         self._peer_name = ""
         self._peer_role = ""
         self._peer_packet_mtu = 0
+        self._peer_parameters: dict[str, Any] = {}
         self._last_rx_time = asyncio.get_running_loop().time()
+        self._hello_message: dict[str, Any] | None = None
+        self._ready_message: dict[str, Any] | None = None
 
     @property
     def session(self) -> Session:
@@ -117,6 +125,10 @@ class VpnConnection:
         return min(self._packet_mtu, self._peer_packet_mtu)
 
     @property
+    def peer_parameters(self) -> dict[str, Any]:
+        return dict(self._peer_parameters)
+
+    @property
     def is_closed(self) -> bool:
         return self._closed.done()
 
@@ -131,34 +143,40 @@ class VpnConnection:
         *,
         initiator: bool,
         timeout: float = 10.0,
+        ready_payload_factory: Callable[["VpnConnection"], dict[str, Any] | None] | None = None,
     ) -> "VpnConnection":
         if self._started:
             raise RuntimeError("VpnConnection already started")
 
-        if initiator:
-            self._send_control(
-                {
+        try:
+            if initiator:
+                self._hello_message = {
                     "type": "vpn.hello",
                     "version": VPN_PROTOCOL_VERSION,
                     "role": self._role,
                     "name": self._local_name,
                     "packet_mtu": self._packet_mtu,
+                    **self._hello_payload,
                 }
-            )
-            ready = await self._recv_control_message(timeout=timeout)
-            self._apply_ready(ready)
-        else:
-            hello = await self._recv_control_message(timeout=timeout)
-            self._apply_hello(hello)
-            self._send_control(
-                {
+                ready = await self._await_ready_with_retries(timeout=timeout)
+                self._apply_ready(ready)
+            else:
+                hello = await self._recv_control_message(timeout=timeout)
+                self._apply_hello(hello)
+                dynamic_ready_payload = ready_payload_factory(self) if ready_payload_factory is not None else None
+                self._ready_message = {
                     "type": "vpn.ready",
                     "version": VPN_PROTOCOL_VERSION,
                     "role": self._role,
                     "name": self._local_name,
                     "packet_mtu": self._packet_mtu,
+                    **self._ready_payload,
+                    **dict(dynamic_ready_payload or {}),
                 }
-            )
+                self._send_control(self._ready_message)
+        except Exception:
+            self._session.disconnect()
+            raise
 
         self._started = True
         self._touch_activity()
@@ -255,6 +273,12 @@ class VpnConnection:
 
     def _handle_runtime_control(self, message: dict[str, Any]) -> bool:
         msg_type = message.get("type")
+        if msg_type == "vpn.hello":
+            if self._ready_message is not None:
+                self._send_control(self._ready_message)
+            return False
+        if msg_type == "vpn.ready":
+            return False
         if msg_type == "vpn.ping":
             self._send_control({"type": "vpn.pong"})
             return False
@@ -316,6 +340,23 @@ class VpnConnection:
             raise RuntimeError("unexpected non-data control event")
         return self._decode_control(event.data)
 
+    async def _await_ready_with_retries(self, *, timeout: float) -> dict[str, Any]:
+        if self._hello_message is None:
+            raise RuntimeError("vpn hello message is not initialized")
+        loop = asyncio.get_running_loop()
+        deadline = loop.time() + timeout
+        while True:
+            self._send_control(self._hello_message)
+            remaining = deadline - loop.time()
+            if remaining <= 0:
+                raise TimeoutError("VPN handshake timed out waiting for vpn.ready")
+            attempt_timeout = min(DEFAULT_HANDSHAKE_RETRY_INTERVAL, remaining)
+            try:
+                return await self._recv_control_message(timeout=attempt_timeout)
+            except TimeoutError:
+                if loop.time() >= deadline:
+                    raise TimeoutError("VPN handshake timed out waiting for vpn.ready") from None
+
     @staticmethod
     def _decode_control(raw: bytes) -> dict[str, Any]:
         body = decode_json_message(raw)
@@ -340,6 +381,11 @@ class VpnConnection:
         self._peer_role = str(message.get("role") or "")
         self._peer_name = str(message.get("name") or "")
         self._peer_packet_mtu = int(message.get("packet_mtu") or 0)
+        self._peer_parameters = {
+            key: value
+            for key, value in message.items()
+            if key not in {"type", "version", "role", "name", "packet_mtu"}
+        }
 
 
 class VpnServer:
@@ -375,7 +421,14 @@ class VpnServer:
     async def __aexit__(self, *_: object) -> None:
         await self._server.__aexit__()
 
-    async def accept(self, *, timeout: float | None = None, handshake_timeout: float = 10.0) -> VpnConnection:
+    async def accept(
+        self,
+        *,
+        timeout: float | None = None,
+        handshake_timeout: float = 10.0,
+        ready_payload: dict[str, Any] | None = None,
+        ready_payload_factory: Callable[[VpnConnection], dict[str, Any] | None] | None = None,
+    ) -> VpnConnection:
         session = await self._server.accept(timeout=timeout)
         connection = VpnConnection(
             session,
@@ -386,8 +439,13 @@ class VpnServer:
             keepalive_timeout=self._keepalive_timeout,
             control_stream_id=self._control_stream_id,
             packet_stream_id=self._packet_stream_id,
+            ready_payload=ready_payload,
         )
-        return await connection.start(initiator=False, timeout=handshake_timeout)
+        return await connection.start(
+            initiator=False,
+            timeout=handshake_timeout,
+            ready_payload_factory=ready_payload_factory,
+        )
 
 
 class VpnClient:
@@ -423,7 +481,12 @@ class VpnClient:
     async def __aexit__(self, *_: object) -> None:
         await self._client.__aexit__()
 
-    async def connect(self, *, handshake_timeout: float = 10.0) -> VpnConnection:
+    async def connect(
+        self,
+        *,
+        handshake_timeout: float = 10.0,
+        hello_payload: dict[str, Any] | None = None,
+    ) -> VpnConnection:
         session = await self._client.connect_session()
         connection = VpnConnection(
             session,
@@ -434,5 +497,6 @@ class VpnClient:
             keepalive_timeout=self._keepalive_timeout,
             control_stream_id=self._control_stream_id,
             packet_stream_id=self._packet_stream_id,
+            hello_payload=hello_payload,
         )
         return await connection.start(initiator=True, timeout=handshake_timeout)

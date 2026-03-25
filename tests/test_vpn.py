@@ -17,12 +17,13 @@ from veil_core.vpn import VpnConnection  # noqa: E402
 
 
 class FakePeerOwner:
-    def __init__(self, *, session_id: int) -> None:
+    def __init__(self, *, session_id: int, dropped_stream_sends: dict[int, int] | None = None) -> None:
         self.session_id = session_id
         self.peer: FakePeerOwner | None = None
         self.queue: asyncio.Queue[Event] = asyncio.Queue()
         self.event_buffer = EventBuffer()
         self.disconnect_calls: list[int] = []
+        self.dropped_stream_sends = dict(dropped_stream_sends or {})
 
     def bind_peer(self, peer: "FakePeerOwner") -> None:
         self.peer = peer
@@ -30,6 +31,10 @@ class FakePeerOwner:
     def send(self, session_id: int, data: bytes, *, stream_id: int) -> bool:
         if self.peer is None:
             raise RuntimeError("peer is not bound")
+        remaining_drops = self.dropped_stream_sends.get(stream_id, 0)
+        if remaining_drops > 0:
+            self.dropped_stream_sends[stream_id] = remaining_drops - 1
+            return True
         self.peer.queue.put_nowait(
             DataEvent(session_id=self.peer.session_id, stream_id=stream_id, data=data)
         )
@@ -50,9 +55,14 @@ class FakePeerOwner:
 
 
 class VpnOverlayTests(unittest.IsolatedAsyncioTestCase):
-    def make_pair(self) -> tuple[Session, Session]:
-        client_owner = FakePeerOwner(session_id=1001)
-        server_owner = FakePeerOwner(session_id=2002)
+    def make_pair(
+        self,
+        *,
+        client_drop_stream_sends: dict[int, int] | None = None,
+        server_drop_stream_sends: dict[int, int] | None = None,
+    ) -> tuple[Session, Session]:
+        client_owner = FakePeerOwner(session_id=1001, dropped_stream_sends=client_drop_stream_sends)
+        server_owner = FakePeerOwner(session_id=2002, dropped_stream_sends=server_drop_stream_sends)
         client_owner.bind_peer(server_owner)
         server_owner.bind_peer(client_owner)
         client_session = Session(
@@ -164,6 +174,71 @@ class VpnOverlayTests(unittest.IsolatedAsyncioTestCase):
 
         with self.assertRaises(asyncio.TimeoutError):
             await client_conn.recv_control(timeout=0.05)
+
+        await client_conn.close("done")
+        self.assertEqual(await server_conn.wait_closed(timeout=1.0), "done")
+
+    async def test_vpn_connection_exchanges_extended_handshake_parameters(self) -> None:
+        client_session, server_session = self.make_pair()
+        client_conn = VpnConnection(
+            client_session,
+            role="client",
+            local_name="alice",
+            hello_payload={"tunnel_mode": "dynamic"},
+        )
+        server_conn = VpnConnection(
+            server_session,
+            role="server",
+            local_name="edge",
+        )
+
+        await asyncio.gather(
+            server_conn.start(
+                initiator=False,
+                timeout=1.0,
+                ready_payload_factory=lambda connection: {
+                    "tun_address": f"10.200.0.{2 + (connection.session_id % 10)}/24",
+                    "tun_peer": "10.200.0.1",
+                },
+            ),
+            client_conn.start(initiator=True, timeout=1.0),
+        )
+
+        self.assertEqual(server_conn.peer_parameters["tunnel_mode"], "dynamic")
+        self.assertIn("tun_address", client_conn.peer_parameters)
+        self.assertEqual(client_conn.peer_parameters["tun_peer"], "10.200.0.1")
+
+        await client_conn.close("done")
+        self.assertEqual(await server_conn.wait_closed(timeout=1.0), "done")
+
+    async def test_vpn_connection_retries_when_initial_hello_is_dropped(self) -> None:
+        client_session, server_session = self.make_pair(client_drop_stream_sends={1: 1})
+        client_conn = VpnConnection(client_session, role="client", local_name="alice")
+        server_conn = VpnConnection(server_session, role="server", local_name="edge")
+
+        await asyncio.gather(
+            server_conn.start(initiator=False, timeout=2.0),
+            client_conn.start(initiator=True, timeout=2.0),
+        )
+
+        self.assertEqual(client_conn.peer_name, "edge")
+        self.assertEqual(server_conn.peer_name, "alice")
+
+        await client_conn.close("done")
+        self.assertEqual(await server_conn.wait_closed(timeout=1.0), "done")
+
+    async def test_vpn_connection_retries_when_initial_ready_is_dropped(self) -> None:
+        client_session, server_session = self.make_pair(server_drop_stream_sends={1: 1})
+        client_conn = VpnConnection(client_session, role="client", local_name="alice")
+        server_conn = VpnConnection(server_session, role="server", local_name="edge")
+
+        await asyncio.gather(
+            server_conn.start(initiator=False, timeout=2.0),
+            client_conn.start(initiator=True, timeout=2.0),
+        )
+
+        self.assertEqual(client_conn.peer_name, "edge")
+        self.assertEqual(server_conn.peer_name, "alice")
 
         await client_conn.close("done")
         self.assertEqual(await server_conn.wait_closed(timeout=1.0), "done")

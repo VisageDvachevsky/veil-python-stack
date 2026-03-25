@@ -75,6 +75,7 @@ struct PeerSession {
   transport::UdpEndpoint endpoint;
   std::uint64_t session_id{0};
   std::atomic<std::int64_t> last_activity_ms{0};
+  std::atomic<bool> ready_notified{false};
 };
 
 /**
@@ -174,6 +175,8 @@ private:
   bool send_control_frame_sync(const std::shared_ptr<PeerSession> &peer,
                                std::uint8_t type,
                                std::span<const std::uint8_t> payload = {});
+  void maybe_drive_http_prelude(const std::shared_ptr<PeerSession> &peer);
+  void maybe_emit_ready(const std::shared_ptr<PeerSession> &peer);
   void mark_session_activity(const std::shared_ptr<PeerSession> &peer);
   static std::int64_t steady_clock_millis();
   void join_teardown_threads();

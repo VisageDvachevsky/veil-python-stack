@@ -46,6 +46,7 @@ class LinuxClientAppTests(unittest.TestCase):
             ctl_script_path=root / "desktop" / "veil_vpn_ctl.py",
             gui_script_path=root / "desktop" / "veil_vpn_client.py",
             runtime_dir=Path(tempdir) / "run",
+            gui_lock_path=Path(tempdir) / "data" / "runtime" / "gui.lock",
         )
 
     def test_save_and_load_client_config(self) -> None:
@@ -139,9 +140,64 @@ class LinuxClientAppTests(unittest.TestCase):
 
             self.assertTrue(payload["installed"])
             self.assertTrue(payload["running"])
+            self.assertTrue(payload["process_alive"])
             self.assertTrue(payload["tun_exists"])
             self.assertEqual(payload["pid"], 12345)
             self.assertEqual(payload["tun_name"], "veiltest0")
+            self.assertEqual(payload["packet_mtu"], config.packet_mtu)
+            self.assertEqual(payload["keepalive_interval"], config.keepalive_interval)
+            self.assertEqual(payload["reconnect"], config.reconnect)
+
+    def test_read_runtime_status_reports_running_when_tun_exists_with_state(self) -> None:
+        with tempfile.TemporaryDirectory() as tempdir:
+            paths = self.make_paths(tempdir)
+            config = LinuxClientConfig(tun_name="veiltest1")
+            paths.config_dir.mkdir(parents=True, exist_ok=True)
+            paths.bin_dir.mkdir(parents=True, exist_ok=True)
+            paths.config_path.write_text(json.dumps({}), encoding="utf-8")
+            paths.ctl_wrapper_path.write_text("#!/bin/sh\n", encoding="utf-8")
+
+            files = runtime_files(paths, config)
+            files.pid_file.parent.mkdir(parents=True, exist_ok=True)
+            files.pid_file.write_text("23456\n", encoding="utf-8")
+            files.state_file.write_text(json.dumps({"underlay_route": {"dev": "eth0"}}), encoding="utf-8")
+
+            with (
+                mock.patch("os.kill", side_effect=ProcessLookupError()),
+                mock.patch("subprocess.run") as run_mock,
+            ):
+                run_mock.return_value.returncode = 0
+                payload = read_runtime_status(paths, config)
+
+            self.assertTrue(payload["running"])
+            self.assertFalse(payload["process_alive"])
+            self.assertTrue(payload["tun_exists"])
+            self.assertEqual(payload["pid"], 23456)
+
+    def test_read_runtime_status_ignores_stale_pid_without_tun(self) -> None:
+        with tempfile.TemporaryDirectory() as tempdir:
+            paths = self.make_paths(tempdir)
+            config = LinuxClientConfig(tun_name="veiltest2")
+            paths.config_dir.mkdir(parents=True, exist_ok=True)
+            paths.bin_dir.mkdir(parents=True, exist_ok=True)
+            paths.config_path.write_text(json.dumps({}), encoding="utf-8")
+            paths.ctl_wrapper_path.write_text("#!/bin/sh\n", encoding="utf-8")
+
+            files = runtime_files(paths, config)
+            files.pid_file.parent.mkdir(parents=True, exist_ok=True)
+            files.pid_file.write_text("34567\n", encoding="utf-8")
+
+            with (
+                mock.patch("os.kill", side_effect=ProcessLookupError()),
+                mock.patch("subprocess.run") as run_mock,
+            ):
+                run_mock.return_value.returncode = 1
+                payload = read_runtime_status(paths, config)
+
+            self.assertFalse(payload["running"])
+            self.assertFalse(payload["process_alive"])
+            self.assertFalse(payload["tun_exists"])
+            self.assertEqual(payload["pid"], 34567)
 
     def test_environment_doctor_reports_tun_and_pyqt(self) -> None:
         env = LinuxClientEnvironment(
@@ -207,19 +263,26 @@ class LinuxClientAppTests(unittest.TestCase):
             process = mock.Mock()
             process.pid = 5151
             calls: list[list[str]] = []
+            clash_stopped = False
 
             def fake_run(args, check=True, capture_output=True, text=True):
+                nonlocal clash_stopped
                 calls.append(args)
                 joined = " ".join(args)
                 result = mock.Mock()
                 result.returncode = 0
                 result.stdout = ""
                 if joined == "ip -4 route get 8.8.8.8":
-                    result.stdout = "8.8.8.8 via 192.168.0.1 dev eth0 src 192.168.0.2 cache\n"
+                    if clash_stopped:
+                        result.stdout = "8.8.8.8 via 192.168.0.1 dev eth0 src 192.168.0.2 cache\n"
+                    else:
+                        result.stdout = "8.8.8.8 via 198.18.0.2 dev Mihomo src 198.18.0.1 cache\n"
                 elif joined == "systemctl is-active clash-verge-service.service":
                     result.stdout = "active\n"
                 elif joined == "systemctl is-enabled clash-verge-service.service":
                     result.stdout = "enabled\n"
+                elif joined == "systemctl stop clash-verge-service.service":
+                    clash_stopped = True
                 return result
 
             with (
@@ -232,12 +295,14 @@ class LinuxClientAppTests(unittest.TestCase):
                 state = json.loads(files.state_file.read_text(encoding="utf-8"))
                 self.assertEqual(payload["suspended_conflicts"][0]["service"], "clash-verge-service.service")
                 self.assertEqual(state["suspended_conflicts"][0]["interface"], "Mihomo")
+                self.assertEqual(state["underlay_route"]["dev"], "eth0")
 
                 stopped = stop_runtime(paths, config)
                 self.assertEqual(stopped["restored_conflicts"][0]["service"], "clash-verge-service.service")
 
             joined_calls = [" ".join(call) for call in calls]
             self.assertIn("systemctl stop clash-verge-service.service", joined_calls)
+            self.assertIn("ip link delete dev Mihomo", joined_calls)
             self.assertIn("systemctl start clash-verge-service.service", joined_calls)
             self.assertIn("/usr/bin/nmcli device set veilrt1 managed no", joined_calls)
 

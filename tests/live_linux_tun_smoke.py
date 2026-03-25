@@ -79,7 +79,7 @@ def main() -> int:
                 (
                     f"cd {ROOT} && "
                     "PYTHONPATH=. python3 examples/linux_vpn_proxy.py "
-                    f"--mode server --host {SERVER_UNDERLAY_IP} --port 4433 "
+                    "--mode server --host 0.0.0.0 --port 4433 "
                     "--tun-name veil0 "
                     f"--tun-address {SERVER_TUN_IP}/30 "
                     f"--tun-peer {CLIENT_TUN_IP} "

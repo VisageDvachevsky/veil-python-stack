@@ -113,6 +113,54 @@ class LiveSmokeTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(seen_on_server, payloads)
             self.assertEqual(received, [(sid, b"ack:" + data) for sid, data in payloads])
 
+    async def test_websocket_http_handshake_emulation_roundtrip_over_real_extension(self) -> None:
+        port = reserve_ephemeral_port()
+        payload = b"http-upgrade-ping"
+        reply = b"http-upgrade-pong"
+
+        server = Server(
+            port=port,
+            host="127.0.0.1",
+            psk=self.psk,
+            protocol_wrapper="websocket",
+            enable_http_handshake_emulation=True,
+            session_idle_timeout_ms=5_000,
+        )
+        client = Client(
+            host="127.0.0.1",
+            port=port,
+            psk=self.psk,
+            protocol_wrapper="websocket",
+            enable_http_handshake_emulation=True,
+            handshake_timeout_ms=2_000,
+        )
+
+        async with server, client:
+            async def server_loop() -> None:
+                async for event in server.events():
+                    if isinstance(event, DataEvent):
+                        self.assertEqual(event.data, payload)
+                        self.assertTrue(server.send(event.session_id, reply, stream_id=event.stream_id))
+                        break
+
+            server_task = asyncio.create_task(server_loop())
+            connection = await asyncio.wait_for(client.connect(), timeout=5)
+            self.assertIsInstance(connection, NewConnectionEvent)
+            self.assertTrue(client.send(payload, stream_id=17))
+
+            received_reply = None
+            async for event in client.events():
+                if isinstance(event, DataEvent):
+                    received_reply = event
+                    break
+
+            await asyncio.wait_for(server_task, timeout=5)
+
+            self.assertIsNotNone(received_reply)
+            assert received_reply is not None
+            self.assertEqual(received_reply.data, reply)
+            self.assertEqual(received_reply.stream_id, 17)
+
     async def test_disconnect_and_reconnect_over_real_extension(self) -> None:
         port = reserve_ephemeral_port()
         server = Server(port=port, host="127.0.0.1", psk=self.psk, session_idle_timeout_ms=5_000)

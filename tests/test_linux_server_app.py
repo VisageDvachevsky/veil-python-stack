@@ -17,6 +17,7 @@ from veil_core.linux_server_app import (  # noqa: E402
     LinuxServerPaths,
     install_server_assets,
     load_server_config,
+    read_server_status,
     save_server_config,
     write_client_profile,
 )
@@ -79,10 +80,51 @@ class LinuxServerAppTests(unittest.TestCase):
                 public_host="vpn.example",
                 public_interface="eth0",
                 psk_hex="15" * 32,
+                enable_http_handshake_emulation=True,
             )
             written = write_client_profile(output, config)
             self.assertEqual(written, output)
-            self.assertIn("15" * 32, output.read_text(encoding="utf-8"))
+            payload = output.read_text(encoding="utf-8")
+            self.assertIn("15" * 32, payload)
+            self.assertIn('"tunnel_mode": "dynamic"', payload)
+            self.assertIn('"tun_peer": ""', payload)
+            self.assertIn('"enable_http_handshake_emulation": true', payload)
+
+    def test_read_server_status_reports_service_and_profile_summary(self) -> None:
+        with tempfile.TemporaryDirectory() as tempdir:
+            paths = self.make_paths(tempdir)
+            config = LinuxServerConfig(
+                public_host="vpn.example",
+                public_interface="eth0",
+                psk_hex="16" * 32,
+                protocol_wrapper="websocket",
+                persona_preset="browser_ws",
+                enable_http_handshake_emulation=True,
+            )
+            paths.config_dir.mkdir(parents=True, exist_ok=True)
+            paths.state_dir.mkdir(parents=True, exist_ok=True)
+            paths.launcher_path.parent.mkdir(parents=True, exist_ok=True)
+            paths.service_path.parent.mkdir(parents=True, exist_ok=True)
+            paths.config_path.write_text(config.to_json(), encoding="utf-8")
+            paths.launcher_path.write_text("#!/bin/sh\n", encoding="utf-8")
+            paths.service_path.write_text("[Service]\n", encoding="utf-8")
+
+            def fake_run(args, check=False, capture_output=True, text=True):
+                result = mock.Mock()
+                result.returncode = 0
+                result.stdout = "active\n" if args[-2:] == ["is-active", paths.service_path.name] else "enabled\n"
+                return result
+
+            with (
+                mock.patch("shutil.which", return_value="/usr/bin/systemctl"),
+                mock.patch("subprocess.run", side_effect=fake_run),
+            ):
+                payload = read_server_status(paths, config)
+
+            self.assertTrue(payload["installed"])
+            self.assertTrue(payload["service_active"])
+            self.assertTrue(payload["service_enabled"])
+            self.assertEqual(payload["client_profile_summary"]["protocol_details"]["wrapper"]["value"], "websocket")
 
 
 if __name__ == "__main__":

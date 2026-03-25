@@ -28,12 +28,22 @@ class ProvisioningTests(unittest.TestCase):
             server_host="vpn.example",
             server_port=4433,
             psk_hex="12" * 32,
+            tunnel_mode="dynamic",
             protocol_wrapper="websocket",
             persona_preset="browser_ws",
+            enable_http_handshake_emulation=True,
+            rotation_interval_seconds=45,
+            handshake_timeout_ms=7000,
+            session_idle_timeout_ms=12000,
+            transport_mtu=1500,
         )
         self.assertEqual(profile.server_host, "vpn.example")
+        self.assertEqual(profile.tunnel_mode, "dynamic")
         self.assertEqual(profile.protocol_wrapper, "websocket")
         self.assertEqual(profile_summary(profile)["psk_hex"], "12" * 32)
+        self.assertTrue(profile_summary(profile)["enable_http_handshake_emulation"])
+        self.assertEqual(profile_summary(profile)["protocol_details"]["wrapper"]["value"], "websocket")
+        self.assertTrue(profile_summary(profile)["protocol_details"]["notes"])
 
         with tempfile.TemporaryDirectory() as tempdir:
             path = Path(tempdir) / "profile.json"
@@ -41,6 +51,7 @@ class ProvisioningTests(unittest.TestCase):
             loaded = ClientConnectionProfile.from_path(path)
             self.assertEqual(loaded.psk_hex, "12" * 32)
             self.assertEqual(loaded.persona_preset, "browser_ws")
+            self.assertEqual(loaded.transport_mtu, 1500)
 
     def test_profile_import_token_roundtrip(self) -> None:
         profile = export_client_profile(

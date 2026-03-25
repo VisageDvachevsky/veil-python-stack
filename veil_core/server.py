@@ -72,6 +72,8 @@ class Server:
 
         # asyncio event queue: C++ callbacks push events here; callers pop them.
         self._queue: asyncio.Queue[Event] = asyncio.Queue()
+        self._accept_queue: asyncio.Queue[NewConnectionEvent] = asyncio.Queue()
+        self._session_queues: dict[int, asyncio.Queue[Event]] = {}
         self._event_buffer = EventBuffer()
         self._loop: Optional[asyncio.AbstractEventLoop] = None
         self._running = False
@@ -220,11 +222,10 @@ class Server:
 
         Non-connection events remain pending for later consumers.
         """
-        event = await self._event_buffer.recv_event(
-            self._queue,
-            timeout=timeout,
-            predicate=lambda item: isinstance(item, NewConnectionEvent),
-        )
+        if timeout is None:
+            event = await self._accept_queue.get()
+        else:
+            event = await asyncio.wait_for(self._accept_queue.get(), timeout=timeout)
         return Session(
             self,
             session_id=event.session_id,
@@ -241,18 +242,24 @@ class Server:
         evt = NewConnectionEvent(
             session_id=session_id, remote_host=host, remote_port=port
         )
+        self._get_session_queue(session_id)
+        self._push_accept_event(evt)
         self._push_event(evt)
 
     def _on_data(self, session_id: int, stream_id: int, data: bytes) -> None:
         evt = DataEvent(session_id=session_id, stream_id=stream_id, data=data)
+        self._push_session_event(session_id, evt)
         self._push_event(evt)
 
     def _on_disconnected(self, session_id: int, reason: str) -> None:
         evt = DisconnectedEvent(session_id=session_id, reason=reason)
+        self._push_session_event(session_id, evt)
         self._push_event(evt)
 
     def _on_error(self, session_id: int, message: str) -> None:
         evt = ErrorEvent(session_id=session_id, message=message)
+        if session_id != 0:
+            self._push_session_event(session_id, evt)
         self._push_event(evt)
 
     # ------------------------------------------------------------------
@@ -263,6 +270,26 @@ class Server:
         """Thread-safe: schedule event delivery onto the asyncio loop."""
         if self._loop is not None and self._loop.is_running():
             self._loop.call_soon_threadsafe(self._queue.put_nowait, event)
+
+    def _push_accept_event(self, event: NewConnectionEvent) -> None:
+        if self._loop is not None and self._loop.is_running():
+            self._loop.call_soon_threadsafe(self._accept_queue.put_nowait, event)
+
+    def _push_session_event(self, session_id: int, event: Event) -> None:
+        if self._loop is None or not self._loop.is_running():
+            return
+        queue = self._get_session_queue(session_id)
+        self._loop.call_soon_threadsafe(queue.put_nowait, event)
+
+    def _get_session_queue(self, session_id: int) -> asyncio.Queue[Event]:
+        queue = self._session_queues.get(session_id)
+        if queue is None:
+            queue = asyncio.Queue()
+            self._session_queues[session_id] = queue
+        return queue
+
+    def session_queue(self, session_id: int) -> asyncio.Queue[Event]:
+        return self._get_session_queue(session_id)
 
     def _require_ext(self) -> None:
         if not _EXT_AVAILABLE:

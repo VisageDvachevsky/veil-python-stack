@@ -220,8 +220,9 @@ class ClientWrapperTests(unittest.IsolatedAsyncioTestCase):
         client.start()
         client._session_id = 101
         session = client.session()
-        await client._queue.put(DataEvent(session_id=202, stream_id=1, data=b"other"))
-        await client._queue.put(DataEvent(session_id=101, stream_id=9, data=b"target"))
+        client._on_data(202, 1, b"other")
+        client._on_data(101, 9, b"target")
+        await asyncio.sleep(0)
 
         matched = await session.recv(timeout=0.1, stream_id=9)
 
@@ -248,9 +249,8 @@ class ClientWrapperTests(unittest.IsolatedAsyncioTestCase):
         client.start()
         client._session_id = 919
         session = client.session()
-        await client._queue.put(
-            DataEvent(session_id=919, stream_id=3, data=b'{"ok":true,"value":"pong"}')
-        )
+        client._on_data(919, 3, b'{"ok":true,"value":"pong"}')
+        await asyncio.sleep(0)
 
         message = await session.recv_json(timeout=0.1, stream_id=3)
 
@@ -265,8 +265,9 @@ class ClientWrapperTests(unittest.IsolatedAsyncioTestCase):
         client.start()
         client._session_id = 919
         session = client.session()
-        await client._queue.put(DisconnectedEvent(session_id=202, reason="other"))
-        await client._queue.put(DisconnectedEvent(session_id=919, reason="target"))
+        client._on_disconnected(202, "other")
+        client._on_disconnected(919, "target")
+        await asyncio.sleep(0)
 
         event = await session.recv_event(timeout=0.1, predicate=lambda item: isinstance(item, DisconnectedEvent))
 

@@ -11,7 +11,14 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 from veil_core.vpn import VpnPacket  # noqa: E402
-from veil_core.linux_proxy import LinuxTunConfig, LinuxVpnProxy  # noqa: E402
+from veil_core.linux_proxy import (  # noqa: E402
+    LinuxClientAddressPool,
+    LinuxTunConfig,
+    LinuxVpnProxy,
+    LinuxVpnProxyClient,
+    LinuxVpnProxyServer,
+    _extract_destination_ipv4,
+)
 
 
 class FakeTun:
@@ -148,6 +155,86 @@ class LinuxProxyTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(reason, "remote_disconnect")
         self.assertTrue(tun.closed)
+
+    def test_client_address_pool_allocates_distinct_client_ips(self) -> None:
+        pool = LinuxClientAddressPool("10.77.0.1/29")
+
+        first = pool.allocate(100)
+        second = pool.allocate(200)
+
+        self.assertEqual(first.client_address_cidr, "10.77.0.2/29")
+        self.assertEqual(second.client_address_cidr, "10.77.0.3/29")
+        self.assertEqual(pool.session_for_destination("10.77.0.2"), 100)
+        self.assertEqual(pool.session_for_destination("10.77.0.3"), 200)
+
+        pool.release(100)
+        recycled = pool.allocate(300, preferred_address="10.77.0.2/29")
+        self.assertEqual(recycled.client_ip, "10.77.0.2")
+
+    def test_extract_destination_ipv4_reads_inner_packet_destination(self) -> None:
+        payload = bytes(
+            [
+                0x45,
+                0x00,
+                0x00,
+                0x14,
+                0x00,
+                0x00,
+                0x00,
+                0x00,
+                0x40,
+                0x11,
+                0x00,
+                0x00,
+                10,
+                77,
+                0,
+                2,
+                10,
+                77,
+                0,
+                9,
+            ]
+        )
+
+        self.assertEqual(_extract_destination_ipv4(payload), "10.77.0.9")
+        self.assertIsNone(_extract_destination_ipv4(b""))
+
+    def test_dynamic_client_tun_config_uses_server_assigned_address(self) -> None:
+        proxy = LinuxVpnProxyClient(
+            host="127.0.0.1",
+            port=4433,
+            tun_config=LinuxTunConfig(name="veiltest", address_cidr=None, peer_address=None),
+        )
+
+        class DummyConnection:
+            peer_parameters = {
+                "tun_address": "10.88.0.2/24",
+                "tun_peer": "",
+                "routes": ["10.99.0.0/24"],
+            }
+
+        resolved = proxy._resolve_tun_config(DummyConnection())
+
+        self.assertEqual(resolved.address_cidr, "10.88.0.2/24")
+        self.assertIsNone(resolved.peer_address)
+        self.assertEqual(resolved.routes, ("10.99.0.0/24",))
+
+    def test_multi_client_server_ready_payload_contains_assigned_tunnel(self) -> None:
+        server = LinuxVpnProxyServer(
+            port=4433,
+            tun_config=LinuxTunConfig(name="veil0", address_cidr="10.90.0.1/24"),
+        )
+
+        class DummyConnection:
+            session_id = 501
+            peer_parameters = {"requested_tun_address": "10.90.0.44/24"}
+
+        payload = server._build_ready_payload(DummyConnection())
+
+        self.assertEqual(payload["tun_address"], "10.90.0.44/24")
+        self.assertEqual(payload["tun_peer"], "")
+        self.assertEqual(payload["tunnel_mode"], "dynamic")
 
 
 if __name__ == "__main__":

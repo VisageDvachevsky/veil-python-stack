@@ -66,6 +66,7 @@ class Client:
         self._port = port
 
         self._queue: asyncio.Queue[Event] = asyncio.Queue()
+        self._session_queues: dict[int, asyncio.Queue[Event]] = {}
         self._event_buffer = EventBuffer()
         self._loop: Optional[asyncio.AbstractEventLoop] = None
         self._pending_connect: Optional[asyncio.Future[NewConnectionEvent]] = None
@@ -264,21 +265,22 @@ class Client:
 
     def _on_new_connection(self, session_id: int, host: str, port: int) -> None:
         event = NewConnectionEvent(session_id=session_id, remote_host=host, remote_port=port)
+        self._get_session_queue(session_id)
         if self._pending_connect is not None and not self._pending_connect.done():
             self._loop.call_soon_threadsafe(self._pending_connect.set_result, event)
         self._push_event(event)
 
     def _on_data(self, session_id: int, stream_id: int, data: bytes) -> None:
-        self._push_event(DataEvent(
-            session_id=session_id, stream_id=stream_id, data=data
-        ))
+        event = DataEvent(session_id=session_id, stream_id=stream_id, data=data)
+        self._push_session_event(session_id, event)
+        self._push_event(event)
 
     def _on_disconnected(self, session_id: int, reason: str) -> None:
         if session_id == self._session_id:
             self._session_id = None
-        self._push_event(DisconnectedEvent(
-            session_id=session_id, reason=reason
-        ))
+        event = DisconnectedEvent(session_id=session_id, reason=reason)
+        self._push_session_event(session_id, event)
+        self._push_event(event)
 
     def _on_error(self, session_id: int, message: str) -> None:
         event = ErrorEvent(session_id=session_id, message=message)
@@ -292,6 +294,8 @@ class Client:
                 self._pending_connect.set_exception,
                 RuntimeError(message),
             )
+        if session_id != 0:
+            self._push_session_event(session_id, event)
         self._push_event(event)
 
     # ------------------------------------------------------------------
@@ -301,6 +305,22 @@ class Client:
     def _push_event(self, event: Event) -> None:
         if self._loop is not None and self._loop.is_running():
             self._loop.call_soon_threadsafe(self._queue.put_nowait, event)
+
+    def _push_session_event(self, session_id: int, event: Event) -> None:
+        if self._loop is None or not self._loop.is_running():
+            return
+        queue = self._get_session_queue(session_id)
+        self._loop.call_soon_threadsafe(queue.put_nowait, event)
+
+    def _get_session_queue(self, session_id: int) -> asyncio.Queue[Event]:
+        queue = self._session_queues.get(session_id)
+        if queue is None:
+            queue = asyncio.Queue()
+            self._session_queues[session_id] = queue
+        return queue
+
+    def session_queue(self, session_id: int) -> asyncio.Queue[Event]:
+        return self._get_session_queue(session_id)
 
     def _require_ext(self) -> None:
         if not _EXT_AVAILABLE:
