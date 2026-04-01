@@ -125,6 +125,7 @@ class LinuxClientConfig:
     server_host: str = "vpn.example"
     server_port: int = 4433
     client_name: str = "veil-client"
+    client_id: str = ""
     psk_hex: str = DEFAULT_CLIENT_PSK.hex()
     tunnel_mode: str = "static"
     tun_name: str = "veilfull0"
@@ -156,6 +157,7 @@ class LinuxClientConfig:
             "SERVER_HOST": self.server_host,
             "SERVER_PORT": str(self.server_port),
             "CLIENT_NAME": self.client_name,
+            "CLIENT_ID": self.client_id or self.client_name,
             "PSK_HEX": self.psk_hex,
             "TUNNEL_MODE": self.tunnel_mode,
             "TUN_NAME": self.tun_name,
@@ -496,6 +498,8 @@ def start_runtime(paths: LinuxClientPaths, config: LinuxClientConfig) -> dict[st
         str(config.packet_mtu),
         "--name",
         config.client_name,
+        "--client-id",
+        config.client_id or config.client_name,
         "--keepalive-interval",
         str(config.keepalive_interval),
         "--keepalive-timeout",
@@ -634,6 +638,7 @@ def read_runtime_status(paths: LinuxClientPaths, config: LinuxClientConfig) -> d
         "server_port": config.server_port,
         "tun_name": config.tun_name,
         "client_name": config.client_name,
+        "client_id": config.client_id or config.client_name,
         "tunnel_mode": config.tunnel_mode,
         "packet_mtu": config.packet_mtu,
         "keepalive_interval": config.keepalive_interval,

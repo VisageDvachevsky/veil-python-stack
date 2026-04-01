@@ -27,7 +27,14 @@ class FakeNodeConfig:
         self.handshake_timeout_ms = 5000
         self.session_idle_timeout_ms = 0
         self.mtu = 1400
+        self.client_id = ""
+        self.clients = []
         self.psk = b""
+        self.fallback_psk = b""
+        self.fallback_psk_policy = "deny_always"
+        self.allow_legacy_unhinted = False
+        self.allow_hinted_route_miss_global_fallback = False
+        self.max_legacy_trial_decrypt_attempts = 8
         self.is_client = False
 
 
@@ -78,6 +85,26 @@ class ServerWrapperTests(unittest.IsolatedAsyncioTestCase):
     def test_constructor_forwards_session_idle_timeout(self) -> None:
         server = server_mod.Server(4433, session_idle_timeout_ms=654)
         self.assertEqual(server._node.cfg.session_idle_timeout_ms, 654)
+
+    def test_constructor_forwards_multi_client_registry(self) -> None:
+        server = server_mod.Server(
+            4433,
+            clients=[
+                {"client_id": "alice", "psk": bytes.fromhex("11" * 32)},
+                {"client_id": "bob", "psk": bytes.fromhex("22" * 32), "enabled": False},
+            ],
+            fallback_psk=bytes.fromhex("33" * 32),
+            fallback_psk_policy="allow_always",
+            allow_legacy_unhinted=True,
+            max_legacy_trial_decrypt_attempts=5,
+        )
+        self.assertEqual(len(server._node.cfg.clients), 2)
+        self.assertEqual(server._node.cfg.clients[0].client_id, "alice")
+        self.assertEqual(server._node.cfg.clients[1].enabled, False)
+        self.assertEqual(server._node.cfg.fallback_psk, bytes.fromhex("33" * 32))
+        self.assertEqual(server._node.cfg.fallback_psk_policy, "allow_always")
+        self.assertTrue(server._node.cfg.allow_legacy_unhinted)
+        self.assertEqual(server._node.cfg.max_legacy_trial_decrypt_attempts, 5)
 
     def test_disconnect_passes_through_to_node(self) -> None:
         server = server_mod.Server(4433)

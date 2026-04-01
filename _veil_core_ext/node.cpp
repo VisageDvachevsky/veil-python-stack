@@ -11,6 +11,8 @@
 namespace veil::binding {
 
 namespace {
+constexpr std::size_t kServerPipelineQueueCapacity = 1024;
+constexpr std::size_t kServerPipelineWorkerStackSizeBytes = 512 * 1024;
 
 utils::TokenBucket make_handshake_rate_limiter() {
   return utils::TokenBucket(100.0, std::chrono::milliseconds(1000));
@@ -18,6 +20,20 @@ utils::TokenBucket make_handshake_rate_limiter() {
 
 constexpr auto kHandshakeClockSkewTolerance = std::chrono::seconds(10);
 constexpr std::uint8_t kControlTypeDisconnect = 1;
+
+auth::FallbackPskPolicy parse_fallback_policy(std::string_view policy) {
+  if (policy == "allow_always") {
+    return auth::FallbackPskPolicy::kAllowAlways;
+  }
+  if (policy == "allow_when_registry_empty") {
+    return auth::FallbackPskPolicy::kAllowWhenRegistryEmpty;
+  }
+  return auth::FallbackPskPolicy::kDenyAlways;
+}
+
+bool should_use_multi_client_handshake(const NodeConfig &config) {
+  return !config.clients.empty() || !config.fallback_psk.empty();
+}
 
 } // namespace
 
@@ -81,22 +97,67 @@ void VeilNode::start() {
                              ec.message());
   }
 
-  if (config_.psk.empty()) {
+  if (config_.is_client && config_.psk.empty()) {
     running_.store(false);
     socket_.close();
     throw std::runtime_error("VeilNode: handshake PSK must not be empty");
+  }
+  if (!config_.is_client && !should_use_multi_client_handshake(config_) &&
+      config_.psk.empty()) {
+    running_.store(false);
+    socket_.close();
+    throw std::runtime_error("VeilNode: server handshake PSK must not be empty");
   }
 
   {
     std::lock_guard<std::mutex> handshake_lock(handshake_mutex_);
     pending_client_endpoint_.reset();
     pending_client_initiator_.reset();
+    pending_client_started_at_.reset();
+    client_registry_.reset();
+    multi_responder_.reset();
     if (!config_.is_client) {
-      responder_ = std::make_unique<handshake::HandshakeResponder>(
-          config_.psk, kHandshakeClockSkewTolerance,
-          make_handshake_rate_limiter());
+      if (should_use_multi_client_handshake(config_)) {
+        auto registry = std::make_shared<auth::ClientRegistry>();
+        for (const auto &client : config_.clients) {
+          if (!registry->add_client(client.client_id, client.psk)) {
+            running_.store(false);
+            socket_.close();
+            throw std::runtime_error("VeilNode: invalid multi-client registry entry for client_id='" +
+                                     client.client_id + "'");
+          }
+          if (!client.enabled) {
+            registry->disable_client(client.client_id);
+          }
+        }
+
+        if (!config_.fallback_psk.empty() &&
+            !registry->set_fallback_psk(config_.fallback_psk)) {
+          running_.store(false);
+          socket_.close();
+          throw std::runtime_error(
+              "VeilNode: invalid fallback PSK size in multi-client config");
+        }
+        registry->set_fallback_psk_policy(
+            parse_fallback_policy(config_.fallback_psk_policy));
+
+        client_registry_ = registry;
+        multi_responder_ =
+            std::make_unique<handshake::MultiClientHandshakeResponder>(
+                client_registry_, kHandshakeClockSkewTolerance,
+                make_handshake_rate_limiter(), handshake::MultiClientHandshakeResponder::Clock::now,
+                config_.allow_legacy_unhinted,
+                config_.allow_hinted_route_miss_global_fallback,
+                config_.max_legacy_trial_decrypt_attempts);
+        responder_.reset();
+      } else {
+        responder_ = std::make_unique<handshake::HandshakeResponder>(
+            config_.psk, kHandshakeClockSkewTolerance,
+            make_handshake_rate_limiter());
+      }
     } else {
       responder_.reset();
+      multi_responder_.reset();
     }
   }
 
@@ -140,6 +201,7 @@ void VeilNode::stop() {
     std::lock_guard<std::mutex> lock(sessions_mutex_);
     sessions_.clear();
     endpoint_sessions_.clear();
+    client_sessions_.clear();
   }
 
   {
@@ -148,6 +210,8 @@ void VeilNode::stop() {
     pending_client_initiator_.reset();
     pending_client_started_at_.reset();
     responder_.reset();
+    multi_responder_.reset();
+    client_registry_.reset();
   }
 
   for (const auto &peer : peers) {
@@ -174,8 +238,14 @@ void VeilNode::connect(const std::string &host, std::uint16_t port) {
   std::vector<std::uint8_t> init_packet;
   {
     std::lock_guard<std::mutex> handshake_lock(handshake_mutex_);
-    auto initiator = std::make_unique<handshake::HandshakeInitiator>(
-        config_.psk, kHandshakeClockSkewTolerance);
+    std::unique_ptr<handshake::HandshakeInitiator> initiator;
+    if (!config_.client_id.empty()) {
+      initiator = std::make_unique<handshake::HandshakeInitiator>(
+          config_.psk, config_.client_id, kHandshakeClockSkewTolerance);
+    } else {
+      initiator = std::make_unique<handshake::HandshakeInitiator>(
+          config_.psk, kHandshakeClockSkewTolerance);
+    }
     init_packet = initiator->create_init();
     pending_client_endpoint_ = ep;
     pending_client_initiator_ = std::move(initiator);
@@ -236,9 +306,11 @@ bool VeilNode::disconnect(std::uint64_t session_id) {
 std::unordered_map<std::string, std::uint64_t> VeilNode::stats() const {
   std::vector<std::shared_ptr<PeerSession>> peers;
   std::uint64_t active_sessions = 0;
+  std::uint64_t active_clients = 0;
   {
     std::lock_guard<std::mutex> lock(sessions_mutex_);
     active_sessions = static_cast<std::uint64_t>(sessions_.size());
+    active_clients = static_cast<std::uint64_t>(client_sessions_.size());
     peers.reserve(sessions_.size());
     for (const auto &[id, peer] : sessions_) {
       peers.push_back(peer);
@@ -411,6 +483,7 @@ std::unordered_map<std::string, std::uint64_t> VeilNode::stats() const {
   result["udp_rx_packets_delivered"] = socket_diagnostics.rx_packets_delivered;
 #endif
   result["active_sessions"] = active_sessions;
+  result["active_clients"] = active_clients;
   return result;
 }
 
@@ -520,18 +593,29 @@ void VeilNode::dispatch_packet(const transport::UdpPacket &packet) {
   should_submit_to_pipeline = peer != nullptr;
 
   if (!peer && !config_.is_client) {
-    std::optional<handshake::HandshakeResponder::Result> handshake_result;
+    std::optional<handshake::HandshakeSession> handshake_session;
     {
       std::lock_guard<std::mutex> handshake_lock(handshake_mutex_);
-      if (responder_) {
-        handshake_result = responder_->handle_init(packet.data, ep_key);
+      if (multi_responder_) {
+        auto multi_handshake_result =
+            multi_responder_->handle_init(packet.data, ep_key);
+        if (multi_handshake_result) {
+          handshake_response = std::move(multi_handshake_result->response);
+          handshake_session = std::move(multi_handshake_result->session);
+        }
+      } else if (responder_) {
+        auto single_handshake_result =
+            responder_->handle_init(packet.data, ep_key);
+        if (single_handshake_result) {
+          handshake_response = std::move(single_handshake_result->response);
+          handshake_session = std::move(single_handshake_result->session);
+        }
       }
     }
 
-    if (handshake_result) {
+    if (handshake_session) {
       std::lock_guard<std::mutex> lock(sessions_mutex_);
-      peer = create_session(handshake_result->session, packet.remote);
-      handshake_response = std::move(handshake_result->response);
+      peer = create_session(*handshake_session, packet.remote);
       session_id = peer->session_id;
       is_new_session = true;
       should_submit_to_pipeline = false;
@@ -614,10 +698,16 @@ VeilNode::create_session(const handshake::HandshakeSession &handshake_session,
   peer->session =
       std::make_unique<transport::TransportSession>(handshake_session, cfg);
   transport::PipelineConfig pcfg;
+  if (!config_.is_client) {
+    pcfg.rx_queue_capacity = kServerPipelineQueueCapacity;
+    pcfg.tx_queue_capacity = kServerPipelineQueueCapacity;
+    pcfg.worker_stack_size_bytes = kServerPipelineWorkerStackSizeBytes;
+  }
   peer->pipeline =
       std::make_unique<transport::PipelineProcessor>(peer->session.get(), pcfg);
   peer->endpoint = endpoint;
   peer->session_id = sid;
+  peer->client_id = handshake_session.client_id;
   peer->last_activity_ms.store(steady_clock_millis());
   const auto weak_peer = std::weak_ptr<PeerSession>(peer);
 
@@ -645,6 +735,9 @@ VeilNode::create_session(const handshake::HandshakeSession &handshake_session,
 
   auto [it, _] = sessions_.emplace(sid, peer);
   endpoint_sessions_[make_endpoint_key(endpoint)] = sid;
+  if (!peer->client_id.empty()) {
+    client_sessions_[peer->client_id].insert(sid);
+  }
   LOG_INFO("[VeilNode] Created session session_id={:#x}, peer={}:{}", sid,
            endpoint.host, endpoint.port);
   return it->second;
@@ -679,6 +772,15 @@ VeilNode::remove_session(std::uint64_t session_id) {
   if (endpoint_it != endpoint_sessions_.end() &&
       endpoint_it->second == session_id) {
     endpoint_sessions_.erase(endpoint_it);
+  }
+  if (!peer->client_id.empty()) {
+    auto client_it = client_sessions_.find(peer->client_id);
+    if (client_it != client_sessions_.end()) {
+      client_it->second.erase(session_id);
+      if (client_it->second.empty()) {
+        client_sessions_.erase(client_it);
+      }
+    }
   }
   sessions_.erase(it);
   return peer;

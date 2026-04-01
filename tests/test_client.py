@@ -27,7 +27,14 @@ class FakeNodeConfig:
         self.handshake_timeout_ms = 5000
         self.session_idle_timeout_ms = 0
         self.mtu = 1400
+        self.client_id = ""
+        self.clients = []
         self.psk = b""
+        self.fallback_psk = b""
+        self.fallback_psk_policy = "deny_always"
+        self.allow_legacy_unhinted = False
+        self.allow_hinted_route_miss_global_fallback = False
+        self.max_legacy_trial_decrypt_attempts = 8
         self.is_client = False
 
 
@@ -113,6 +120,10 @@ class ClientWrapperTests(unittest.IsolatedAsyncioTestCase):
     async def test_constructor_forwards_session_idle_timeout(self) -> None:
         client = client_mod.Client("127.0.0.1", 4433, session_idle_timeout_ms=321)
         self.assertEqual(client._node.cfg.session_idle_timeout_ms, 321)
+
+    async def test_constructor_forwards_client_id(self) -> None:
+        client = client_mod.Client("127.0.0.1", 4433, client_id="alice-laptop")
+        self.assertEqual(client._node.cfg.client_id, "alice-laptop")
 
     async def test_disconnect_clears_cached_session_id(self) -> None:
         client = client_mod.Client("127.0.0.1", 4433)

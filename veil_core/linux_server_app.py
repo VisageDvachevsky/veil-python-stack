@@ -83,6 +83,27 @@ class LinuxServerEnvironment:
 
 
 @dataclass
+class LinuxServerClientConfig:
+    client_id: str = ""
+    client_name: str = ""
+    psk_hex: str = ""
+    enabled: bool = True
+
+    def ensure_defaults(self) -> "LinuxServerClientConfig":
+        if not self.client_id:
+            self.client_id = self.client_name or "veil-client"
+        if not self.client_name:
+            self.client_name = self.client_id
+        if not self.psk_hex:
+            self.psk_hex = generate_psk_hex()
+        return self
+
+    @property
+    def psk(self) -> bytes:
+        return bytes.fromhex(self.psk_hex)
+
+
+@dataclass
 class LinuxServerConfig:
     bind_host: str = "0.0.0.0"
     bind_port: int = 4433
@@ -90,6 +111,12 @@ class LinuxServerConfig:
     public_interface: str = ""
     server_name: str = "veil-server"
     psk_hex: str = ""
+    clients: list[LinuxServerClientConfig] | None = None
+    fallback_psk_hex: str = ""
+    fallback_psk_policy: str = "deny_always"
+    allow_legacy_unhinted: bool = False
+    allow_hinted_route_miss_global_fallback: bool = False
+    max_legacy_trial_decrypt_attempts: int = 8
     tun_name: str = "veil0"
     tun_address: str = "10.200.0.1/24"
     tun_peer: str = ""
@@ -105,7 +132,9 @@ class LinuxServerConfig:
     transport_mtu: int = 1400
 
     def ensure_defaults(self) -> "LinuxServerConfig":
-        if not self.psk_hex:
+        if self.clients:
+            self.clients = [client.ensure_defaults() for client in self.clients]
+        elif not self.psk_hex:
             self.psk_hex = generate_psk_hex()
         if not self.public_interface:
             self.public_interface = autodetect_public_interface()
@@ -135,13 +164,29 @@ class LinuxServerConfig:
     def to_json(self) -> str:
         return json.dumps(asdict(self), ensure_ascii=False, indent=2, sort_keys=True) + "\n"
 
-    def export_client_profile(self) -> ClientConnectionProfile:
+    def _resolve_export_client(self, client_id: str | None = None) -> LinuxServerClientConfig | None:
+        if not self.clients:
+            return None
+        enabled_clients = [client.ensure_defaults() for client in self.clients if client.enabled]
+        if not enabled_clients:
+            raise RuntimeError("at least one enabled client is required to export a client profile")
+        if client_id is None:
+            return enabled_clients[0]
+        for client in enabled_clients:
+            if client.client_id == client_id:
+                return client
+        raise RuntimeError(f"no enabled client found for client_id={client_id!r}")
+
+    def export_client_profile(self, client_id: str | None = None) -> ClientConnectionProfile:
         if not self.public_host:
             raise RuntimeError("public_host must be set before exporting a client profile")
+        selected_client = self._resolve_export_client(client_id)
         return export_client_profile(
             server_host=self.public_host,
             server_port=self.bind_port,
-            psk_hex=self.psk_hex,
+            psk_hex=selected_client.psk_hex if selected_client else self.psk_hex,
+            client_name=selected_client.client_name if selected_client else "veil-client",
+            client_id=selected_client.client_id if selected_client else "",
             tunnel_mode="dynamic",
             tun_name="veilfull0",
             tun_address="",
@@ -162,7 +207,10 @@ class LinuxServerConfig:
 def load_server_config(path: Path) -> LinuxServerConfig:
     if not path.exists():
         return LinuxServerConfig().ensure_defaults()
-    return LinuxServerConfig(**json.loads(path.read_text(encoding="utf-8"))).ensure_defaults()
+    raw = json.loads(path.read_text(encoding="utf-8"))
+    clients_raw = raw.get("clients") or []
+    raw["clients"] = [LinuxServerClientConfig(**client) for client in clients_raw]
+    return LinuxServerConfig(**raw).ensure_defaults()
 
 
 def save_server_config(path: Path, config: LinuxServerConfig) -> None:

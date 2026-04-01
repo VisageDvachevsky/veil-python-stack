@@ -81,6 +81,19 @@ async def main() -> None:
         keepalive_interval=config.keepalive_interval,
         keepalive_timeout=config.keepalive_timeout,
         psk=bytes.fromhex(config.psk_hex),
+        clients=[
+            {
+                "client_id": client.client_id,
+                "psk": bytes.fromhex(client.psk_hex),
+                "enabled": client.enabled,
+            }
+            for client in (config.clients or [])
+        ],
+        fallback_psk=bytes.fromhex(config.fallback_psk_hex) if config.fallback_psk_hex else None,
+        fallback_psk_policy=config.fallback_psk_policy,
+        allow_legacy_unhinted=config.allow_legacy_unhinted,
+        allow_hinted_route_miss_global_fallback=config.allow_hinted_route_miss_global_fallback,
+        max_legacy_trial_decrypt_attempts=config.max_legacy_trial_decrypt_attempts,
         protocol_wrapper=config.protocol_wrapper,
         persona_preset=config.persona_preset,
         enable_http_handshake_emulation=config.enable_http_handshake_emulation,

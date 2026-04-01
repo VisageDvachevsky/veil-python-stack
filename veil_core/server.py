@@ -21,7 +21,8 @@ from __future__ import annotations
 
 import asyncio
 from collections.abc import Callable
-from typing import AsyncIterator, Optional
+from types import SimpleNamespace
+from typing import Any, AsyncIterator, Optional
 
 from veil_core._event_buffer import EventBuffer
 from veil_core._ext_loader import load_extension
@@ -66,6 +67,12 @@ class Server:
         session_idle_timeout_ms: int = 0,
         mtu: int = 1400,
         psk: bytes = bytes([0xAB]) * 32,
+        clients: list[dict[str, Any] | Any] | None = None,
+        fallback_psk: bytes | None = None,
+        fallback_psk_policy: str = "deny_always",
+        allow_legacy_unhinted: bool = False,
+        allow_hinted_route_miss_global_fallback: bool = False,
+        max_legacy_trial_decrypt_attempts: int = 8,
     ) -> None:
         self._host = host
         self._port = port
@@ -95,6 +102,14 @@ class Server:
         cfg.session_idle_timeout_ms = session_idle_timeout_ms
         cfg.mtu = mtu
         cfg.psk = psk
+        cfg.clients = [self._build_client_credential(item) for item in (clients or [])]
+        cfg.fallback_psk = fallback_psk or b""
+        cfg.fallback_psk_policy = fallback_psk_policy
+        cfg.allow_legacy_unhinted = allow_legacy_unhinted
+        cfg.allow_hinted_route_miss_global_fallback = (
+            allow_hinted_route_miss_global_fallback
+        )
+        cfg.max_legacy_trial_decrypt_attempts = max_legacy_trial_decrypt_attempts
 
         self._node = _ext.VeilNode(cfg)
         self._node.on_new_connection = self._on_new_connection
@@ -237,6 +252,31 @@ class Server:
     # ------------------------------------------------------------------
     # C++ callback receivers (called from C++ worker threads)
     # ------------------------------------------------------------------
+
+    def _build_client_credential(self, item: dict[str, Any] | Any) -> Any:
+        credential = (
+            _ext.ClientCredential()
+            if hasattr(_ext, "ClientCredential")
+            else SimpleNamespace(client_id="", enabled=True, psk=b"")
+        )
+        if isinstance(item, dict):
+            client_id = str(item.get("client_id", "")).strip()
+            enabled = bool(item.get("enabled", True))
+            psk = item.get("psk", b"")
+        else:
+            client_id = str(getattr(item, "client_id", "")).strip()
+            enabled = bool(getattr(item, "enabled", True))
+            psk = getattr(item, "psk", b"")
+
+        if isinstance(psk, str):
+            psk_bytes = bytes.fromhex(psk)
+        else:
+            psk_bytes = bytes(psk)
+
+        credential.client_id = client_id
+        credential.enabled = enabled
+        credential.psk = psk_bytes
+        return credential
 
     def _on_new_connection(self, session_id: int, host: str, port: int) -> None:
         evt = NewConnectionEvent(

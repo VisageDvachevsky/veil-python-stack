@@ -30,6 +30,8 @@ def reserve_ephemeral_port() -> int:
 class LiveSmokeTests(unittest.IsolatedAsyncioTestCase):
     async def asyncSetUp(self) -> None:
         self.psk = bytes([0x5A]) * 32
+        self.psk_alice = bytes([0x41]) * 32
+        self.psk_bob = bytes([0x42]) * 32
 
     async def test_client_server_roundtrip_over_real_extension(self) -> None:
         port = reserve_ephemeral_port()
@@ -199,3 +201,75 @@ class LiveSmokeTests(unittest.IsolatedAsyncioTestCase):
 
             await asyncio.wait_for(server_probe(), timeout=5)
             self.assertEqual(server_data, (21, b"reconnected"))
+
+    async def test_multi_client_server_roundtrip_over_real_extension(self) -> None:
+        port = reserve_ephemeral_port()
+        server = Server(
+            port=port,
+            host="127.0.0.1",
+            clients=[
+                {"client_id": "alice", "psk": self.psk_alice},
+                {"client_id": "bob", "psk": self.psk_bob},
+            ],
+            session_idle_timeout_ms=5_000,
+        )
+        alice = Client(
+            host="127.0.0.1",
+            port=port,
+            client_id="alice",
+            psk=self.psk_alice,
+            handshake_timeout_ms=2_000,
+        )
+        bob = Client(
+            host="127.0.0.1",
+            port=port,
+            client_id="bob",
+            psk=self.psk_bob,
+            handshake_timeout_ms=2_000,
+        )
+
+        async with server, alice, bob:
+            expected_payloads = {
+                "alice": b"alice-ping",
+                "bob": b"bob-ping",
+            }
+            replies: dict[str, bytes] = {}
+
+            async def server_loop() -> None:
+                seen = 0
+                async for event in server.events():
+                    if not isinstance(event, DataEvent):
+                        continue
+                    if event.data == expected_payloads["alice"]:
+                        self.assertTrue(server.send(event.session_id, b"alice-pong", stream_id=event.stream_id))
+                        seen += 1
+                    elif event.data == expected_payloads["bob"]:
+                        self.assertTrue(server.send(event.session_id, b"bob-pong", stream_id=event.stream_id))
+                        seen += 1
+                    if seen == 2:
+                        break
+
+            server_task = asyncio.create_task(server_loop())
+            await asyncio.gather(
+                asyncio.wait_for(alice.connect(), timeout=5),
+                asyncio.wait_for(bob.connect(), timeout=5),
+            )
+
+            self.assertTrue(alice.send(expected_payloads["alice"], stream_id=31))
+            self.assertTrue(bob.send(expected_payloads["bob"], stream_id=37))
+
+            async def collect_reply(client: Client, expected: bytes) -> bytes:
+                async for event in client.events():
+                    if isinstance(event, DataEvent):
+                        self.assertEqual(event.data, expected)
+                        return event.data
+                raise AssertionError("client event stream ended before reply")
+
+            replies["alice"], replies["bob"] = await asyncio.gather(
+                collect_reply(alice, b"alice-pong"),
+                collect_reply(bob, b"bob-pong"),
+            )
+
+            await asyncio.wait_for(server_task, timeout=5)
+            self.assertEqual(replies["alice"], b"alice-pong")
+            self.assertEqual(replies["bob"], b"bob-pong")

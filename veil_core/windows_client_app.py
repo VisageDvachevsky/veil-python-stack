@@ -146,6 +146,7 @@ class WindowsClientConfig:
     server_host: str = "vpn.example"
     server_port: int = 4433
     client_name: str = "veil-client"
+    client_id: str = ""
     psk_hex: str = DEFAULT_CLIENT_PSK.hex()
     adapter_name: str = "VeilVPN"
     tun_address: str = "10.200.0.2/30"

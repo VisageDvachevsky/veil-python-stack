@@ -97,6 +97,21 @@ static void update_callbacks(VeilNode &node, UpdateFn &&update_fn) {
 PYBIND11_MODULE(_veil_core_ext, m) {
   m.doc() = "Veil Protocol C++ core — Python extension";
 
+  py::class_<ClientCredential>(m, "ClientCredential")
+      .def(py::init<>())
+      .def_readwrite("client_id", &ClientCredential::client_id)
+      .def_readwrite("enabled", &ClientCredential::enabled)
+      .def_property(
+          "psk",
+          [](const ClientCredential &c) {
+            return py::bytes(reinterpret_cast<const char *>(c.psk.data()),
+                             c.psk.size());
+          },
+          [](ClientCredential &c, py::bytes value) {
+            std::string raw = value;
+            c.psk.assign(raw.begin(), raw.end());
+          });
+
   // -----------------------------------------------------------------------
   // NodeConfig
   // -----------------------------------------------------------------------
@@ -116,6 +131,8 @@ PYBIND11_MODULE(_veil_core_ext, m) {
       .def_readwrite("session_idle_timeout_ms",
                      &NodeConfig::session_idle_timeout_ms)
       .def_readwrite("mtu", &NodeConfig::mtu)
+      .def_readwrite("client_id", &NodeConfig::client_id)
+      .def_readwrite("clients", &NodeConfig::clients)
       .def_property(
           "psk",
           [](const NodeConfig &c) {
@@ -126,6 +143,23 @@ PYBIND11_MODULE(_veil_core_ext, m) {
             std::string raw = value;
             c.psk.assign(raw.begin(), raw.end());
           })
+      .def_property(
+          "fallback_psk",
+          [](const NodeConfig &c) {
+            return py::bytes(reinterpret_cast<const char *>(c.fallback_psk.data()),
+                             c.fallback_psk.size());
+          },
+          [](NodeConfig &c, py::bytes value) {
+            std::string raw = value;
+            c.fallback_psk.assign(raw.begin(), raw.end());
+          })
+      .def_readwrite("fallback_psk_policy", &NodeConfig::fallback_psk_policy)
+      .def_readwrite("allow_legacy_unhinted",
+                     &NodeConfig::allow_legacy_unhinted)
+      .def_readwrite("allow_hinted_route_miss_global_fallback",
+                     &NodeConfig::allow_hinted_route_miss_global_fallback)
+      .def_readwrite("max_legacy_trial_decrypt_attempts",
+                     &NodeConfig::max_legacy_trial_decrypt_attempts)
       .def("__repr__", [](const NodeConfig &c) {
         return "<NodeConfig host=" + c.host +
                " port=" + std::to_string(c.port) +

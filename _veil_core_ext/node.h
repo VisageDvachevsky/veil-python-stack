@@ -12,8 +12,10 @@
 #include <string_view>
 #include <thread>
 #include <unordered_map>
+#include <unordered_set>
 #include <vector>
 
+#include "common/auth/client_registry.h"
 #include "common/handshake/handshake_processor.h"
 #include "common/logging/logger.h"
 #include "common/utils/rate_limiter.h"
@@ -22,6 +24,12 @@
 #include "transport/udp_socket/udp_socket.h"
 
 namespace veil::binding {
+
+struct ClientCredential {
+  std::string client_id{};
+  std::vector<std::uint8_t> psk{};
+  bool enabled{true};
+};
 
 /**
  * Configuration for a VeilNode (server or client).
@@ -43,7 +51,15 @@ struct NodeConfig {
   int handshake_timeout_ms{5000};
   int session_idle_timeout_ms{0};
   std::size_t mtu{1400};
+  std::string client_id{};
   std::vector<std::uint8_t> psk{32, 0xAB};
+  std::vector<ClientCredential> clients{};
+  std::vector<std::uint8_t> fallback_psk{};
+  std::string fallback_psk_policy{"deny_always"};
+  bool allow_legacy_unhinted{false};
+  bool allow_hinted_route_miss_global_fallback{false};
+  std::size_t max_legacy_trial_decrypt_attempts{
+      handshake::MultiClientHandshakeResponder::kDefaultMaxLegacyTrialDecryptAttempts};
 };
 
 /**
@@ -74,6 +90,7 @@ struct PeerSession {
   std::unique_ptr<transport::PipelineProcessor> pipeline;
   transport::UdpEndpoint endpoint;
   std::uint64_t session_id{0};
+  std::string client_id;
   std::atomic<std::int64_t> last_activity_ms{0};
   std::atomic<bool> ready_notified{false};
 };
@@ -198,9 +215,13 @@ private:
   transport::UdpSocket socket_;
   std::unordered_map<std::uint64_t, std::shared_ptr<PeerSession>> sessions_;
   std::unordered_map<std::string, std::uint64_t> endpoint_sessions_;
+  std::unordered_map<std::string, std::unordered_set<std::uint64_t>>
+      client_sessions_;
   mutable std::mutex sessions_mutex_;
   std::mutex handshake_mutex_;
   std::unique_ptr<handshake::HandshakeResponder> responder_;
+  std::shared_ptr<auth::ClientRegistry> client_registry_;
+  std::unique_ptr<handshake::MultiClientHandshakeResponder> multi_responder_;
   std::optional<transport::UdpEndpoint> pending_client_endpoint_;
   std::unique_ptr<handshake::HandshakeInitiator> pending_client_initiator_;
   std::optional<std::chrono::steady_clock::time_point>

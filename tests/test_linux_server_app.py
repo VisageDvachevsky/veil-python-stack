@@ -12,6 +12,7 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 from veil_core.linux_server_app import (  # noqa: E402
+    LinuxServerClientConfig,
     LinuxServerConfig,
     LinuxServerEnvironment,
     LinuxServerPaths,
@@ -42,11 +43,17 @@ class LinuxServerAppTests(unittest.TestCase):
     def test_save_and_load_server_config(self) -> None:
         with tempfile.TemporaryDirectory() as tempdir:
             path = Path(tempdir) / "server.json"
-            config = LinuxServerConfig(public_host="vpn.example", psk_hex="13" * 32)
+            config = LinuxServerConfig(
+                public_host="vpn.example",
+                psk_hex="13" * 32,
+                clients=[LinuxServerClientConfig(client_id="alice", psk_hex="12" * 32)],
+            )
             save_server_config(path, config)
             loaded = load_server_config(path)
             self.assertEqual(loaded.public_host, "vpn.example")
             self.assertEqual(loaded.psk_hex, "13" * 32)
+            self.assertEqual(len(loaded.clients or []), 1)
+            self.assertEqual(loaded.clients[0].client_id, "alice")
 
     def test_install_server_assets_writes_config_profile_and_service(self) -> None:
         with tempfile.TemporaryDirectory() as tempdir:
@@ -89,6 +96,24 @@ class LinuxServerAppTests(unittest.TestCase):
             self.assertIn('"tunnel_mode": "dynamic"', payload)
             self.assertIn('"tun_peer": ""', payload)
             self.assertIn('"enable_http_handshake_emulation": true', payload)
+
+    def test_write_client_profile_prefers_first_enabled_multi_client_entry(self) -> None:
+        with tempfile.TemporaryDirectory() as tempdir:
+            output = Path(tempdir) / "profiles" / "client.json"
+            config = LinuxServerConfig(
+                public_host="vpn.example",
+                public_interface="eth0",
+                clients=[
+                    LinuxServerClientConfig(client_id="alice", client_name="Alice", psk_hex="21" * 32, enabled=True),
+                    LinuxServerClientConfig(client_id="bob", client_name="Bob", psk_hex="22" * 32, enabled=False),
+                ],
+            )
+            written = write_client_profile(output, config)
+            self.assertEqual(written, output)
+            payload = output.read_text(encoding="utf-8")
+            self.assertIn('"client_id": "alice"', payload)
+            self.assertIn('"client_name": "Alice"', payload)
+            self.assertIn("21" * 32, payload)
 
     def test_read_server_status_reports_service_and_profile_summary(self) -> None:
         with tempfile.TemporaryDirectory() as tempdir:

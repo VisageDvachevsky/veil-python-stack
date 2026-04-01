@@ -52,6 +52,7 @@ class Client:
         host: str,
         port: int,
         *,
+        client_id: str = "",
         local_port: int = 0,  # 0 = OS picks an ephemeral port
         protocol_wrapper: str = "none",
         persona_preset: str = "custom",
@@ -89,6 +90,7 @@ class Client:
         cfg.session_idle_timeout_ms = session_idle_timeout_ms
         cfg.mtu = mtu
         cfg.psk = psk
+        cfg.client_id = client_id
         cfg.is_client = True
 
         self._node = _ext.VeilNode(cfg)

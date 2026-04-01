@@ -228,6 +228,7 @@ python3 desktop/install_linux_client.py
 - build script: `desktop/build_windows_vpn_client.ps1`
 - installer script: `desktop/veil_vpn_client_windows.iss`
 - operator guide: [WINDOWS_VPN.md](WINDOWS_VPN.md)
+- VM smoke for protocol/runtime validation: [WINDOWS_VM_SMOKE.md](WINDOWS_VM_SMOKE.md)
 
 Целевой deliverable:
 

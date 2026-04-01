@@ -21,6 +21,7 @@ class ClientConnectionProfile:
     server_host: str
     server_port: int
     client_name: str = "veil-client"
+    client_id: str = ""
     psk_hex: str = ""
     tunnel_mode: str = "dynamic"
     tun_name: str = "veilfull0"
@@ -76,6 +77,7 @@ def export_client_profile(
     server_port: int,
     psk_hex: str,
     client_name: str = "veil-client",
+    client_id: str = "",
     tunnel_mode: str = "dynamic",
     tun_name: str = "veilfull0",
     tun_address: str = "",
@@ -95,6 +97,7 @@ def export_client_profile(
         server_host=server_host,
         server_port=server_port,
         client_name=client_name,
+        client_id=client_id,
         psk_hex=psk_hex,
         tunnel_mode=tunnel_mode,
         tun_name=tun_name,
@@ -123,6 +126,7 @@ def profile_summary(profile: ClientConnectionProfile) -> dict[str, Any]:
         "server_host": profile.server_host,
         "server_port": profile.server_port,
         "client_name": profile.client_name,
+        "client_id": profile.client_id,
         "tunnel_mode": profile.tunnel_mode,
         "tun_name": profile.tun_name,
         "tun_address": profile.tun_address,

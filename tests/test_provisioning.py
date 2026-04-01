@@ -27,6 +27,7 @@ class ProvisioningTests(unittest.TestCase):
         profile = export_client_profile(
             server_host="vpn.example",
             server_port=4433,
+            client_id="alice-laptop",
             psk_hex="12" * 32,
             tunnel_mode="dynamic",
             protocol_wrapper="websocket",
@@ -39,8 +40,10 @@ class ProvisioningTests(unittest.TestCase):
         )
         self.assertEqual(profile.server_host, "vpn.example")
         self.assertEqual(profile.tunnel_mode, "dynamic")
+        self.assertEqual(profile.client_id, "alice-laptop")
         self.assertEqual(profile.protocol_wrapper, "websocket")
         self.assertEqual(profile_summary(profile)["psk_hex"], "12" * 32)
+        self.assertEqual(profile_summary(profile)["client_id"], "alice-laptop")
         self.assertTrue(profile_summary(profile)["enable_http_handshake_emulation"])
         self.assertEqual(profile_summary(profile)["protocol_details"]["wrapper"]["value"], "websocket")
         self.assertTrue(profile_summary(profile)["protocol_details"]["notes"])
@@ -57,11 +60,13 @@ class ProvisioningTests(unittest.TestCase):
         profile = export_client_profile(
             server_host="vpn.example",
             server_port=4433,
+            client_id="charlie",
             psk_hex="34" * 32,
         )
         token = profile.to_import_token()
         loaded = ClientConnectionProfile.from_import_token(token)
         self.assertEqual(loaded.server_host, "vpn.example")
+        self.assertEqual(loaded.client_id, "charlie")
         self.assertEqual(loaded.psk_hex, "34" * 32)
         self.assertTrue(profile_summary(profile)["import_token"].startswith("veil://profile/"))
 

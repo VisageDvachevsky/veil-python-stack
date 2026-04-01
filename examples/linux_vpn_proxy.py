@@ -34,6 +34,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--reconnect-delay", type=float, default=2.0)
     parser.add_argument("--max-reconnect-delay", type=float, default=15.0)
     parser.add_argument("--name", default=None)
+    parser.add_argument("--client-id", default="")
     parser.add_argument("--psk-hex", default="ab" * 32)
     parser.add_argument("--protocol-wrapper", default="none")
     parser.add_argument("--persona-preset", default="custom")
@@ -87,6 +88,7 @@ async def main() -> None:
         max_reconnect_delay=args.max_reconnect_delay,
         keepalive_interval=args.keepalive_interval,
         keepalive_timeout=args.keepalive_timeout,
+        client_id=args.client_id,
         psk=psk,
         protocol_wrapper=args.protocol_wrapper,
         persona_preset=args.persona_preset,
